@@ -5,17 +5,17 @@ pub struct Note(i32);
 
 impl Note {
     /// creates a new note given the difference in semitones from a4
-    pub const fn from_semitone_difference(difference: i32) -> Self {
+    pub const fn from_semitone_delta_a4(difference: i32) -> Self {
         Self(difference * 100)
     }
 
     /// creates a new note given the difference in cents from a4
-    pub const fn from_cent_difference(difference: i32) -> Self {
+    pub const fn from_cent_delta_a4(difference: i32) -> Self {
         Self(difference)
     }
 
     /// gets the difference in cents from a4
-    pub const fn cent_difference(&self) -> i32 {
+    pub const fn cent_delta_a4(&self) -> i32 {
         self.0
     }
 
@@ -28,7 +28,7 @@ impl Note {
 #[derive(Debug, Clone)]
 pub enum NoteParseError {
     Overflow,
-	MissingOctave,
+    MissingOctave,
     InvalidOctave,
     MissingTone,
     InvalidTone,
@@ -57,7 +57,9 @@ impl FromStr for Note {
             'g' => 700,
             'a' => 900,
             'b' => 1100,
-            _ => { return Err(NoteParseError::InvalidOctave); }
+            _ => {
+                return Err(NoteParseError::InvalidTone);
+            }
         };
 
         // the sign of the octave
@@ -75,7 +77,7 @@ impl FromStr for Note {
         if *potential_accidental == 'b' {
             c_delta -= 100;
             chars.next();
-        } else {
+        } else if *potential_accidental == '#' {
             c_delta += 100;
             chars.next();
         }
@@ -119,3 +121,93 @@ impl FromStr for Note {
     }
 }
 
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_equality() {
+        for i in 0..200 {
+            assert_eq!(
+            	Note::from_cent_delta_a4(i),
+                Note::from_cent_delta_a4(i),
+        	);
+        }
+    }
+
+    #[test]
+    fn cent_difference_a4_create_and_check() {
+        for i in 0..200 {
+            assert_eq!(
+                Note::from_cent_delta_a4(i).cent_delta_a4(),
+                i,
+            );
+        }
+    }
+
+    #[test]
+    fn parse_sharp_one_digit_octaves() {
+        let pairs = [
+            ("a#4", 0 + 1),
+            ("c#2", -9 + -2 * 12 + 1),
+            ("f#8", -4 + 4 * 12 + 1),
+            ("b#0", 2 + -4 * 12 + 1),
+            ("d#9", -7 + 5 * 12 + 1),
+            ("e#1", -5 + -3 * 12 + 1),
+            ("g#7", -2 + 3 * 12 + 1),
+         ];
+
+        for (string, semitone_delta) in &pairs {
+            let expect_err = format!("{} should be parsable.", string);
+            assert_eq!(
+            	Note::from_str(string).expect(&expect_err),
+                Note::from_semitone_delta_a4(*semitone_delta),
+                "failed case {string}"
+        	);
+        }
+    }
+
+    #[test]
+    fn parse_flat_one_digit_octaves() {
+        let pairs = [
+            ("ab4", 0 - 1),
+            ("cb2", -9 + -2 * 12 - 1),
+            ("fb8", -4 + 4 * 12 - 1),
+            ("bb0", 2 + -4 * 12 - 1),
+            ("db9", -7 + 5 * 12 - 1),
+            ("eb1", -5 + -3 * 12 - 1),
+            ("gb7", -2 + 3 * 12 - 1),
+         ];
+
+        for (string, semitone_delta) in &pairs {
+            let expect_err = format!("{} should be parsable.", string);
+            assert_eq!(
+            	Note::from_str(string).expect(&expect_err),
+                Note::from_semitone_delta_a4(*semitone_delta),
+                "failed case {string}"
+        	);
+        }
+    }
+
+    #[test]
+    fn parse_natural_one_digit_octaves() {
+        let pairs = [
+            ("a4", 0),
+            ("c2", -9 + -2 * 12),
+            ("f8", -4 + 4 * 12),
+            ("b0", 2 + -4 * 12),
+            ("d9", -7 + 5 * 12),
+            ("e1", -5 + -3 * 12),
+            ("g7", -2 + 3 * 12),
+        ];
+
+        for (string, semitone_delta) in &pairs {
+            let expect_err = format!("{} should be parsable.", string);
+            assert_eq!(
+            	Note::from_str(string).expect(&expect_err),
+                Note::from_semitone_delta_a4(*semitone_delta),
+                "failed case {string}"
+        	);
+        }
+    }
+}

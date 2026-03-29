@@ -1,8 +1,10 @@
-use crate::{Note, Synthesizer};
+use std::collections::HashMap;
+
+use crate::{Note, Synthesizer, SynthesizerSpecification};
 
 pub enum SynthManagerCommand {
     /// add a synthesizer to the manager
-    AddSynth(Box<dyn Synthesizer>),
+    AddSynth(u32),
 
     /// play a note on the synthesizers
     PlayNote(Note),
@@ -17,17 +19,23 @@ pub enum SynthManagerCommand {
 /// tells synths which notes to play and generates samples
 pub struct SynthManager {
     synths: Vec<Box<dyn Synthesizer>>,
+    synth_specs: HashMap<u32, Box<SynthesizerSpecification>>,
 }
 
+unsafe impl Send for SynthManager {}
+
 impl SynthManager {
-    pub fn new() -> Self {
+    pub fn new(synth_specs: HashMap<u32, Box<SynthesizerSpecification>>) -> Self {
         Self {
             synths: Vec::new(),
+            synth_specs,
         }
     }
 
-    pub fn add_synth(&mut self, synth: Box<dyn Synthesizer>) {
-        self.synths.push(synth);
+    pub fn add_synth(&mut self, synth_id: u32) {
+        if let Some(specification) = self.synth_specs.get(&synth_id) {
+            self.synths.push((specification.generate_synth)());
+        }
     }
 
     pub fn start_playing_note(&mut self, note: Note) {
@@ -61,9 +69,9 @@ impl SynthManager {
     pub fn generate_samples(&mut self, buffer: &mut [f32], sample_rate: u32) {
         for sample in buffer.iter_mut() {
             *sample = 0.0;
-        }
-        for synth in self.synths.iter_mut() {
-            synth.generate_samples(buffer, sample_rate);
+            for synth in self.synths.iter_mut() {
+                *sample += synth.generate_sample(sample_rate);
+            }
         }
     }
 }

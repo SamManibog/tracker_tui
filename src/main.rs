@@ -1,15 +1,22 @@
-use std::{collections::HashSet, sync::mpsc::{self, Sender}};
+use std::{collections::{HashMap, HashSet}, sync::mpsc::{self, Sender}};
 
 use cpal::{Stream, StreamConfig, traits::{DeviceTrait, HostTrait, StreamTrait}};
 use egui::Event;
-use rsynth::*;
+use rsynth::{osc_synths::PolyphonicOscSynth, *};
 
 fn main() {
+    let specification_map = HashMap::from([
+        (0, Box::new(PolyphonicOscSynth::sine_specification()))
+    ]);
+
     let native_options = eframe::NativeOptions::default();
     let _ = eframe::run_native(
         "RSynth",
         native_options,
-        Box::new(|cc| Ok(Box::new(RsynthApp::new(cc))))
+        Box::new(|cc| Ok(Box::new(RsynthApp::new(
+            cc,
+            specification_map
+        ))))
     );
 }
 
@@ -22,25 +29,27 @@ struct RsynthApp {
 }
 
 impl RsynthApp {
-    pub fn new(_cc: &eframe::CreationContext) -> Self {
-        let mut manager = SynthManager::new();
-        manager.add_synth(Box::new(
-            PolyphonicOscSynth::<FixedSineOscillator>::new(
-                12,
-                440.0
-            )
-        ));
+    pub fn new(
+        _cc: &eframe::CreationContext,
+        synth_specs: HashMap<u32, Box<SynthesizerSpecification>>
+    ) -> Self {
         let (sender, reciever) = mpsc::channel();
+        let _ = sender.send(SynthManagerCommand::AddSynth(0));
 
         let host = cpal::default_host();
         let device = host.default_output_device().expect("no output device available");
         let mut supported_configs_range = device.supported_output_configs()
             .expect("error while querying configs");
-        let supported_config = supported_configs_range.next()
+
+        let sample_rate = 48000;
+        let supported_config = supported_configs_range
+            .find(|config| config.try_with_sample_rate(sample_rate).is_some())
             .expect("no supported config?!")
-            .with_max_sample_rate();
+            .with_sample_rate(sample_rate);
         let config: StreamConfig = supported_config.into();
-        let sample_rate = config.sample_rate;
+
+        let mut manager = SynthManager::new(synth_specs);
+
         let stream = device.build_output_stream(
             &config,
             move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
@@ -100,7 +109,7 @@ impl RsynthApp {
                 _ => return None,
             }
         };
-        Some(Note::from_cent_difference((multiplier - 9) * 100))
+        Some(Note::from_semitone_delta_a4(multiplier - 9))
     }
 }
 
