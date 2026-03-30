@@ -1,6 +1,6 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 
-use crate::Note;
+use crate::{Note, NoteId};
 
 /// the id of a parameter on a synthesizer
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -113,6 +113,7 @@ impl SynthParamSpecification {
 
 /// the specification for a synthesizer
 pub struct SynthesizerSpecification {
+    pub name: String,
     pub generate_synth: Box<dyn Fn() -> Box<dyn Synthesizer> + Send>,
     pub parameters: HashMap<SynthParamId, SynthParamSpecification>,
 }
@@ -126,10 +127,10 @@ pub trait Synthesizer {
     fn set_parameter(&mut self, param_id: SynthParamId, value: f64);
 
     /// tell the syntheziser to begin playing a note
-    fn start_playing_note(&mut self, note: Note);
+    fn start_playing_note(&mut self, note_id: NoteId, note: Note);
 
     /// tell the synthesizer to stop playing a note
-    fn stop_playing_note(&mut self, note: Note);
+    fn stop_playing_note(&mut self, note_id: NoteId);
 
     /// tell the synthesizer to stop playing all notes
     fn stop_all(&mut self);

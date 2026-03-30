@@ -1,6 +1,6 @@
 use std::collections::{HashMap, VecDeque};
 
-use crate::{Note, SynthParamId, SynthParamSpecification, Synthesizer, SynthesizerSpecification};
+use crate::{Note, NoteId, SynthParamId, SynthParamSpecification, Synthesizer, SynthesizerSpecification};
 
 /// a synthesizer that generates samples using multiple fixed oscillators
 pub struct PolyphonicOscSynth {
@@ -10,7 +10,7 @@ pub struct PolyphonicOscSynth {
     max_voices: usize,
 
     /// the note being played, its oscillator, and the declick level
-	oscillators: VecDeque<(Note, PhaseIndexOscillator, i32)>
+	oscillators: VecDeque<(NoteId, PhaseIndexOscillator, i32)>
 }
 
 impl PolyphonicOscSynth {
@@ -34,6 +34,7 @@ impl PolyphonicOscSynth {
     /// generates the specification for a sine osc synth
     pub fn sine_specification() -> SynthesizerSpecification {
         SynthesizerSpecification {
+            name: "Sinewave Synth".to_string(),
             parameters: HashMap::from([
                 (
                     SynthParamId(0),
@@ -57,13 +58,69 @@ impl PolyphonicOscSynth {
             })
         }
     }
+
+    /// generates the specification for a saw osc synth
+    pub fn saw_specification() -> SynthesizerSpecification {
+        SynthesizerSpecification {
+            name: "Saw Synth".to_string(),
+            parameters: HashMap::from([
+                (
+                    SynthParamId(0),
+                    SynthParamSpecification::new("declick")
+                        .int_like(0, 48000),
+                ),
+                (
+                    SynthParamId(1),
+                    SynthParamSpecification::new("max voices")
+                        .int_like(1, 24),
+                )
+            ]),
+            generate_synth: Box::new(|| {
+                Box::new(Self::new(
+                    240,
+                    12,
+                    Box::new(|note|
+                        PhaseIndexOscillator::new_saw(note.frequency(440.0) as f32)
+                    )
+                ))
+            })
+        }
+    }
+
+    /// generates the specification for a square osc synth
+    pub fn square_specification() -> SynthesizerSpecification {
+        SynthesizerSpecification {
+            name: "Squarewave Synth".to_string(),
+            parameters: HashMap::from([
+                (
+                    SynthParamId(0),
+                    SynthParamSpecification::new("declick")
+                        .int_like(0, 48000),
+                ),
+                (
+                    SynthParamId(1),
+                    SynthParamSpecification::new("max voices")
+                        .int_like(1, 24),
+                )
+            ]),
+            generate_synth: Box::new(|| {
+                Box::new(Self::new(
+                    240,
+                    12,
+                    Box::new(|note|
+                        PhaseIndexOscillator::new_square(note.frequency(440.0) as f32)
+                    )
+                ))
+            })
+        }
+    }
 }
 
 impl Synthesizer for PolyphonicOscSynth {
-    fn start_playing_note(&mut self, note: Note) {
+    fn start_playing_note(&mut self, note_id: NoteId, note: Note) {
         // ensure that note is not already playing
-        for (osc_note, _, _) in self.oscillators.iter() {
-            if *osc_note == note {
+        for (osc_note_id, _, _) in self.oscillators.iter() {
+            if *osc_note_id == note_id {
                 return;
             }
         }
@@ -82,16 +139,16 @@ impl Synthesizer for PolyphonicOscSynth {
 
         // add note
         self.oscillators.push_back((
-            note,
+            note_id,
             (self.osc_generator)(note),
             0,
         ));
         self.voice_count += 1;
     }
 
-    fn stop_playing_note(&mut self, note: Note) {
-        for (osc_note, _, declick) in self.oscillators.iter_mut() {
-            if *osc_note == note {
+    fn stop_playing_note(&mut self, note_id: NoteId) {
+        for (osc_note_id, _, declick) in self.oscillators.iter_mut() {
+            if *osc_note_id == note_id {
                 *declick *= -1;
                 self.voice_count -= 1;
                 return;
@@ -175,6 +232,30 @@ impl PhaseIndexOscillator {
             frequency,
             Box::new(|phase_index| {
                 f32::sin(phase_index * std::f32::consts::TAU)
+            })
+        )
+    }
+
+    /// creates a squarewave oscillator with the given frequency
+    pub fn new_square(frequency: f32) -> Self {
+        Self::new(
+            frequency,
+            Box::new(|phase_index| {
+                if phase_index < 0.5 {
+                    1.0
+                } else {
+                    -1.0
+                }
+            })
+        )
+    }
+
+    /// creates a saw oscillator with the given frequency
+    pub fn new_saw(frequency: f32) -> Self {
+        Self::new(
+            frequency,
+            Box::new(|phase_index| {
+                phase_index
             })
         )
     }

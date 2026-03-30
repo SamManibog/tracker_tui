@@ -1,13 +1,91 @@
-use std::{collections::{HashMap, HashSet}, sync::mpsc::{self, Sender}};
+use std::{collections::{HashMap, HashSet}, str::FromStr, sync::{Arc, OnceLock, mpsc::{self, Receiver, Sender}}};
 
 use cpal::{Stream, StreamConfig, traits::{DeviceTrait, HostTrait, StreamTrait}};
 use egui::Event;
 use rsynth::{osc_synths::PolyphonicOscSynth, *};
 
 fn main() {
-    let specification_map = HashMap::from([
-        (0, Box::new(PolyphonicOscSynth::sine_specification()))
-    ]);
+    play_pattern();
+}
+
+// plays a fun little pattern lol
+fn play_pattern() {
+    static PATTERN: OnceLock<&'static Pattern> = OnceLock::new();
+
+    let host = cpal::default_host();
+    let device = host.default_output_device().expect("no output device available");
+    let mut supported_configs_range = device.supported_output_configs()
+        .expect("error while querying configs");
+
+    let sample_rate = 48000;
+    let supported_config = supported_configs_range
+        .find(|config| config.try_with_sample_rate(sample_rate).is_some())
+        .expect("no supported config?!")
+        .with_sample_rate(sample_rate);
+    let config: StreamConfig = supported_config.into();
+
+    let synth = (PolyphonicOscSynth::sine_specification().generate_synth)();
+    let &pattern_ref = PATTERN.get_or_init(|| {
+        let mut pattern = Box::new(Pattern::new());
+        let composition: &[(&[&str], PatternTime, PatternDuration)] = &[
+            (
+                &["d4", "f4", "g4", "c5"],
+                PatternTime::from_subdivision_count(4, 0).unwrap(),
+                PatternDuration::from_subdivision_count(4, 1).unwrap()
+            ),
+            (
+                &["d4", "f4", "g4", "b4"],
+                PatternTime::from_subdivision_count(4, 1).unwrap(),
+                PatternDuration::from_subdivision_count(4, 1).unwrap()
+            ),
+            (
+                &["c4", "e4", "a4", "b4", "d5"],
+                PatternTime::from_subdivision_count(4, 2).unwrap(),
+                PatternDuration::from_subdivision_count(4, 2).unwrap()
+            ),
+        ];
+        for (notes, start, duration) in composition {
+            let end = *start + *duration;
+            for note in *notes {
+                pattern.add_note(
+                    Note::from_str(note).unwrap(),
+                    *start,
+                    end
+                );
+            }
+        }
+        Box::leak(pattern)
+    });
+
+    let mut pattern_player = PatternPlayer::new(
+        (&pattern_ref).command_iter(),
+        synth,
+        0.2,
+        sample_rate
+    );
+
+    let stream = device.build_output_stream(
+        &config,
+        move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+            pattern_player.generate_samples(data);
+        },
+        move |_err| {
+            println!("ERROR BRUH")
+        },
+        None // None=blocking, Some(Duration)=timeout
+    ).expect("Could not build stream.");
+    let _ = stream.play().expect("stream could not play");
+
+    loop {}
+}
+
+/*
+fn run_synth_test {
+    let specification_map = Arc::new(HashMap::from([
+        (0, Box::new(PolyphonicOscSynth::sine_specification())),
+        (1, Box::new(PolyphonicOscSynth::square_specification())),
+        (2, Box::new(PolyphonicOscSynth::saw_specification())),
+    ]));
 
     let native_options = eframe::NativeOptions::default();
     let _ = eframe::run_native(
@@ -23,6 +101,7 @@ fn main() {
 struct RsynthApp {
     pressed_notes: HashSet<Note>,
     sender: Sender<SynthManagerCommand>,
+    reciever: Receiver<SynthManagerMessage>,
 
     #[allow(dead_code)]
     stream: Stream,
@@ -31,10 +110,11 @@ struct RsynthApp {
 impl RsynthApp {
     pub fn new(
         _cc: &eframe::CreationContext,
-        synth_specs: HashMap<u32, Box<SynthesizerSpecification>>
+        synth_specs: Arc<HashMap<u32, Box<SynthesizerSpecification>>>
     ) -> Self {
-        let (sender, reciever) = mpsc::channel();
-        let _ = sender.send(SynthManagerCommand::AddSynth(0));
+        let (command_sender, command_reciever) = mpsc::channel();
+        let (mut message_sender, message_reciever) = mpsc::channel();
+        let _ = command_sender.send(SynthManagerCommand::AddSynth{synth_type_id: 2});
 
         let host = cpal::default_host();
         let device = host.default_output_device().expect("no output device available");
@@ -48,13 +128,13 @@ impl RsynthApp {
             .with_sample_rate(sample_rate);
         let config: StreamConfig = supported_config.into();
 
-        let mut manager = SynthManager::new(synth_specs);
+        let mut manager = SynthManager::new(synth_specs.clone());
 
         let stream = device.build_output_stream(
             &config,
             move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-                while let Ok(command) = reciever.try_recv() {
-                    manager.handle_command(command);
+                while let Ok(command) = command_reciever.try_recv() {
+                    manager.handle_command(command, &mut message_sender);
                 }
                 manager.generate_samples(data, sample_rate);
             },
@@ -67,7 +147,8 @@ impl RsynthApp {
 
         Self {
             pressed_notes: HashSet::new(),
-            sender,
+            sender: command_sender,
+            reciever: message_reciever,
             stream
         }
     }
@@ -134,11 +215,11 @@ impl eframe::App for RsynthApp {
                 if let Some(note) = Self::key_to_note(name) {
                     if *pressed {
                         if self.pressed_notes.insert(note) {
-                            let _ = self.sender.send(SynthManagerCommand::PlayNote(note));
+                            let _ = self.sender.send(SynthManagerCommand::PlayNote{synth_id: SynthId(0), note});
                         }
                     } else {
                         if self.pressed_notes.remove(&note) {
-                            let _ = self.sender.send(SynthManagerCommand::StopNote(note));
+                            let _ = self.sender.send(SynthManagerCommand::StopNote{synth_id: SynthId(0), note});
                         }
                     }
                 }
@@ -146,3 +227,4 @@ impl eframe::App for RsynthApp {
         }
     }
 }
+*/
