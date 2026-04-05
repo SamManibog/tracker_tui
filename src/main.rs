@@ -1,13 +1,208 @@
-use std::{collections::{HashMap, HashSet}, str::FromStr, sync::{Arc, OnceLock, mpsc::{self, Receiver, Sender}}};
+use std::{io, str::FromStr, sync::OnceLock};
 
-use cpal::{Stream, StreamConfig, traits::{DeviceTrait, HostTrait, StreamTrait}};
-use egui::Event;
+use cpal::{StreamConfig, traits::{DeviceTrait, HostTrait, StreamTrait}};
+use ratatui::{DefaultTerminal, Frame, buffer::Buffer, crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers}, layout::{Position, Rect}, style::Stylize, symbols::border, text::{Line, Text}, widgets::{Block, Paragraph, Widget}};
 use rsynth::{osc_synths::PolyphonicOscSynth, *};
 
-fn main() {
-    play_pattern();
+static TEST_PHRASE: OnceLock<&'static Phrase> = OnceLock::new();
+
+fn main() -> io::Result<()> {
+    TEST_PHRASE.set({
+        let mut phrase = Box::new(Phrase::new(Phrase::TICKS_PER_WHOLE_NOTE, 4));
+        let composition: &[(&[&str], u32)] = &[
+            (
+                &["d4", "f4", "g4", "c5"],
+                0,
+            ),
+            (
+                &["d4", "f4", "g4", "b4"],
+                1,
+            ),
+            (
+                &["c4", "e4", "a4", "b4", "d5"],
+                2,
+            ),
+        ];
+        for (notes, time) in composition {
+            for (column, note_str) in notes.iter().enumerate() {
+                if let Ok(note) = Note::from_str(note_str) {
+                    while phrase.voice_count() <= column {
+                        phrase.add_voice();
+                    }
+
+                    phrase.set_note(*time, column, Some(note));
+                }           
+            }
+        }
+        Box::leak(phrase)
+    }).expect("first thing in main function");
+
+    ratatui::run(|terminal| RsynthTuiApp::new().run(terminal))
 }
 
+fn play_phrase() {
+
+    let host = cpal::default_host();
+    let device = host.default_output_device().expect("no output device available");
+    let mut supported_configs_range = device.supported_output_configs()
+        .expect("error while querying configs");
+
+    let sample_rate = 48000;
+    let supported_config = supported_configs_range
+        .find(|config| config.try_with_sample_rate(sample_rate).is_some())
+        .expect("no supported config?!")
+        .with_sample_rate(sample_rate);
+    let config: StreamConfig = supported_config.into();
+
+    let &phrase_ref = TEST_PHRASE.get().unwrap();
+    let synth_box = (PolyphonicOscSynth::saw_specification().generate_synth)();
+    let synth = Box::leak(synth_box);
+
+    let mut phrase_player = PhrasePlayer::new(
+        phrase_ref,
+        synth,
+        sample_rate,
+        10.0/60.0
+    );
+
+    let stream = device.build_output_stream(
+        &config,
+        move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+			let mut samples = data.iter_mut();
+            while let (Some(left), Some(right)) = (samples.next(), samples.next()) {
+                let sample = phrase_player.next().unwrap();
+                *left = sample;
+                *right = sample
+            }
+        },
+        move |_err| {
+            println!("ERROR BRUH")
+        },
+        None // None=blocking, Some(Duration)=timeout
+    ).expect("Could not build stream.");
+
+    let _ = stream.play().expect("stream could not play");
+
+    loop {}
+}
+
+#[derive(Debug)]
+pub struct RsynthTuiApp {
+    phrase: Phrase,
+    position: Position,
+    cell_pos: Position,
+    exit: bool
+}
+
+impl RsynthTuiApp {
+    pub fn new() -> Self {
+        let mut phrase = Phrase::new(16, 40);
+        phrase.set_note(0, 0, Some(Note::C4.add_semitones(1)));
+        phrase.set_note(3, 0, Some(Note::A4));
+        phrase.set_note(7, 0, Some(Note::C0));
+        phrase.set_note(11, 0, Some(Note::B9));
+        phrase.add_voice();
+        phrase.set_note(2, 1, Some(Note::B9));
+        phrase.set_note(6, 1, Some(Note::B9));
+        phrase.set_note(10, 1, Some(Note::B9));
+        phrase.set_note(14, 1, Some(Note::B9));
+        phrase.set_effect(0, 0, Some(PhraseEffect::Silence));
+        phrase.set_effect(0, 1, Some(PhraseEffect::Silence));
+        phrase.set_effect(0, 2, Some(PhraseEffect::SetTransition(PhraseTransitionMode::Release)));
+        phrase.set_effect(3, 0, Some(PhraseEffect::SetTransition(PhraseTransitionMode::Lerp)));
+        phrase.set_effect(3, 1, Some(PhraseEffect::SetTransition(PhraseTransitionMode::Release)));
+        phrase.set_effect(12, 0, Some(PhraseEffect::Silence));
+        Self {
+            phrase,
+            position: Position::MIN,
+            cell_pos: Position::new(0, 40),
+            exit: false
+        }
+    }
+
+    /// runs the application's main loop until the user quits
+    pub fn run(&mut self, terminal: &mut DefaultTerminal) -> io::Result<()> {
+        while !self.exit {
+            terminal.draw(|frame| self.draw(frame))?;
+            self.handle_events()?;
+        }
+        Ok(())
+    }
+
+    fn draw(&mut self, frame: &mut Frame) {
+        frame.render_widget(self, frame.area());
+    }
+
+    fn handle_events(&mut self) -> io::Result<()> {
+        match event::read()? {
+            // it's important to check that the event is a key press event as
+            // crossterm also emits key release and repeat events on Windows.
+            Event::Key(key_event) if key_event.kind == KeyEventKind::Press => {
+                self.handle_key_event(key_event)
+            }
+            _ => {}
+        };
+        Ok(())
+    }
+
+    fn handle_key_event(&mut self, key_event: KeyEvent) {
+        match key_event.code {
+            KeyCode::Char('q') => self.exit = true,
+
+            KeyCode::Char('j') => self.cell_pos.y = self.cell_pos.y.saturating_add(1),
+            KeyCode::Char('k') => self.cell_pos.y = self.cell_pos.y.saturating_sub(1),
+
+            KeyCode::Char('h') => self.position.x = self.position.x.saturating_sub(1),
+            KeyCode::Char('l') => self.position.x = self.position.x.saturating_add(1),
+            _ => {}
+        }
+    }
+}
+
+impl Widget for &mut RsynthTuiApp {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        let phrase_renderer = PhraseWidget {
+            phrase: &self.phrase,
+            cam_pos: &mut self.position,
+            cell_pos: &mut self.cell_pos,
+        };
+        phrase_renderer.render(area, buf);
+        /*
+        let title = Line::from(" Counter App Tutorial ".bold());
+        let instructions = Line::from(vec![
+            " Decrement ".into(),
+            "<J>".blue().bold(),
+            " Increment ".into(),
+            "<K>".blue().bold(),
+            " Quit ".into(),
+            "<Q> ".blue().bold(),
+        ]);
+        let block = Block::bordered()
+            .title(title.centered())
+            .title_bottom(instructions.centered())
+            .border_set(border::THICK);
+
+        let note_string = if self.write_sharp {
+            self.note.to_string_sharps()
+        } else {
+            self.note.to_string_flats()
+        };
+        let counter_text = Text::from(vec![
+            Line::from(vec![
+                "Value: ".into(),
+                note_string.yellow(),
+            ]),
+        ]);
+
+        Paragraph::new(counter_text)
+            .centered()
+            .block(block)
+            .render(area, buf);
+*/
+    }
+}
+
+/*
 // plays a fun little pattern lol
 fn play_pattern() {
     static PATTERN: OnceLock<&'static Pattern> = OnceLock::new();
@@ -79,7 +274,6 @@ fn play_pattern() {
     loop {}
 }
 
-/*
 fn run_synth_test {
     let specification_map = Arc::new(HashMap::from([
         (0, Box::new(PolyphonicOscSynth::sine_specification())),

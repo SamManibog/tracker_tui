@@ -10,7 +10,15 @@ pub use note::*;
 pub mod patterns;
 pub use patterns::*;
 
-pub mod pattern_player;
-pub use pattern_player::*;
+pub mod phrase;
+pub use phrase::*;
+
+pub mod phrase_player;
+pub use phrase_player::*;
+
+// pub mod pattern_player;
+// pub use pattern_player::*;
 
 pub mod osc_synths;
+
+mod utils;

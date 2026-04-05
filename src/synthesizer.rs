@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::{Note, NoteId};
+use crate::NoteId;
 
 /// the id of a parameter on a synthesizer
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -120,21 +120,41 @@ pub struct SynthesizerSpecification {
 
 /// a synthesizer
 pub trait Synthesizer {
+    /// update the syntheziser with the output stream state
+    fn set_stream_state(&mut self, state: &OutputStreamState);
+
     /// get the value of a parameter
     fn get_parameter(&self, param_id: SynthParamId) -> Option<f64>;
 
     /// tell the synthesizer to set a parameter to a specific value
     fn set_parameter(&mut self, param_id: SynthParamId, value: f64);
 
-    /// tell the syntheziser to begin playing a note
-    fn start_playing_note(&mut self, note_id: NoteId, note: Note);
+    /// tell the syntheziser to begin playing a frequency
+    fn start_playing_note(&mut self, note_id: NoteId, freq: f64);
 
-    /// tell the synthesizer to stop playing a note
+    /// set the frequency of the given note
+    fn set_note_frequency(&mut self, note_id: NoteId, freq: f64);
+
+    /// the given note the the frequency over the given duration in seconds
+    fn lerp_note(&mut self, note_id: NoteId, freq: f64, duration: f64);
+
+    /// tell the synthesizer to stop playing a note.
+    /// immediately after this is called, the note id it was called for must
+    /// note reference the stopped note. this function should ignore calls
+    /// to stop notes that are not playing
     fn stop_playing_note(&mut self, note_id: NoteId);
 
     /// tell the synthesizer to stop playing all notes
     fn stop_all(&mut self);
 
     /// generate a single sample assuming the given sample rate
-    fn generate_sample(&mut self, sample_rate: u32) -> f32;
+    fn generate_sample(&mut self) -> f32;
 }
+
+/// describes the state of the output stream
+#[derive(Debug)]
+pub struct OutputStreamState {
+    /// the number of samples per second
+    pub sample_rate: u32,
+}
+

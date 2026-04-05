@@ -1,34 +1,56 @@
 use std::collections::{HashMap, VecDeque};
 
-use crate::{Note, NoteId, SynthParamId, SynthParamSpecification, Synthesizer, SynthesizerSpecification};
+use crate::{NoteId, OutputStreamState, SynthParamId, SynthParamSpecification, Synthesizer, SynthesizerSpecification};
 
 /// a synthesizer that generates samples using multiple fixed oscillators
 pub struct PolyphonicOscSynth {
-    osc_generator: Box<dyn Fn(Note) -> PhaseIndexOscillator + Send>,
-    declick_samples: i32,
-	voice_count: usize,
+    sample_rate: u32,
+
+    osc_generator: Box<dyn Fn(f64) -> PhaseIndexOscillator + Send>,
+    declick_duration: f64,
+    declick_samples: u32,
     max_voices: usize,
 
     /// the note being played, its oscillator, and the declick level
-	oscillators: VecDeque<(NoteId, PhaseIndexOscillator, i32)>
+	oscillators: VecDeque<(NoteId, PhaseIndexOscillator, u32)>,
+
+    /// the notes being stopped and their declick level
+    /// should be sorted by declick level
+    stopping_oscillators: VecDeque<(PhaseIndexOscillator, u32)>,
 }
 
 impl PolyphonicOscSynth {
     pub const AMPLITUDE_MULTIPLIER: f32 = 0.05;
 
     pub fn new(
-        declick_samples: i32,
+        declick_samples: u32,
         max_voices: usize,
-        osc_generator: Box<dyn Fn(Note) -> PhaseIndexOscillator + Send>,
+        osc_generator: Box<dyn Fn(f64) -> PhaseIndexOscillator + Send>,
     ) -> Self {
-        assert!(declick_samples >= 0, "declick_samples must be non-negative");
         Self {
+            sample_rate: 48000,
             osc_generator,
             declick_samples,
-            voice_count: 0,
+            declick_duration: declick_samples as f64 / 48000.0,
             max_voices,
             oscillators: VecDeque::new(),
+            stopping_oscillators: VecDeque::new(),
         }
+    }
+
+    pub fn set_declick_duration(&mut self, declick_duration: f64) {
+        assert!(declick_duration >= 0.0);
+        self.declick_duration = declick_duration;
+        self.recalculate_declick_samples();
+    }
+
+    pub fn set_sample_rate(&mut self, sample_rate: u32) {
+        self.sample_rate = sample_rate;
+        self.recalculate_declick_samples();
+    }
+
+    fn recalculate_declick_samples(&mut self) {
+        self.declick_samples = (self.sample_rate as f64 * self.declick_duration).ceil() as u32;
     }
 
     /// generates the specification for a sine osc synth
@@ -38,8 +60,8 @@ impl PolyphonicOscSynth {
             parameters: HashMap::from([
                 (
                     SynthParamId(0),
-                    SynthParamSpecification::new("declick")
-                        .int_like(0, 48000),
+                    SynthParamSpecification::new("declick secs")
+                        .min_max(0.0, 0.5)
                 ),
                 (
                     SynthParamId(1),
@@ -51,8 +73,8 @@ impl PolyphonicOscSynth {
                 Box::new(Self::new(
                     240,
                     12,
-                    Box::new(|note|
-                        PhaseIndexOscillator::new_sine(note.frequency(440.0) as f32)
+                    Box::new(|freq|
+                        PhaseIndexOscillator::new_sine(freq as f32)
                     )
                 ))
             })
@@ -66,8 +88,8 @@ impl PolyphonicOscSynth {
             parameters: HashMap::from([
                 (
                     SynthParamId(0),
-                    SynthParamSpecification::new("declick")
-                        .int_like(0, 48000),
+                    SynthParamSpecification::new("declick secs")
+                        .min_max(0.0, 0.5)
                 ),
                 (
                     SynthParamId(1),
@@ -79,8 +101,8 @@ impl PolyphonicOscSynth {
                 Box::new(Self::new(
                     240,
                     12,
-                    Box::new(|note|
-                        PhaseIndexOscillator::new_saw(note.frequency(440.0) as f32)
+                    Box::new(|freq|
+                        PhaseIndexOscillator::new_saw(freq as f32)
                     )
                 ))
             })
@@ -94,8 +116,8 @@ impl PolyphonicOscSynth {
             parameters: HashMap::from([
                 (
                     SynthParamId(0),
-                    SynthParamSpecification::new("declick")
-                        .int_like(0, 48000),
+                    SynthParamSpecification::new("declick secs")
+                        .min_max(0.0, 0.5)
                 ),
                 (
                     SynthParamId(1),
@@ -107,8 +129,8 @@ impl PolyphonicOscSynth {
                 Box::new(Self::new(
                     240,
                     12,
-                    Box::new(|note|
-                        PhaseIndexOscillator::new_square(note.frequency(440.0) as f32)
+                    Box::new(|freq|
+                        PhaseIndexOscillator::new_square(freq as f32)
                     )
                 ))
             })
@@ -117,7 +139,15 @@ impl PolyphonicOscSynth {
 }
 
 impl Synthesizer for PolyphonicOscSynth {
-    fn start_playing_note(&mut self, note_id: NoteId, note: Note) {
+    fn lerp_note(&mut self, note_id: NoteId, freq: f64, duration: f64) {
+        println!("unimplemented: lerp note {:?} at {} for {}", note_id, freq, duration);
+    }
+
+    fn set_stream_state(&mut self, state: &OutputStreamState) {
+        self.sample_rate = state.sample_rate;
+    }
+    
+    fn start_playing_note(&mut self, note_id: NoteId, freq: f64) {
         // ensure that note is not already playing
         for (osc_note_id, _, _) in self.oscillators.iter() {
             if *osc_note_id == note_id {
@@ -126,73 +156,87 @@ impl Synthesizer for PolyphonicOscSynth {
         }
 
         // ensure that voice_count is in the valid range,
-        // by possibly removing an oscillator
-        if self.voice_count >= self.max_voices {
-            if let Some((_, _, declick)) = self.oscillators.iter_mut()
-                .find(|(_, _, declick)| {
-                    *declick > 0
-                }) {
-                *declick *= -1;
-                self.voice_count -= 1;
+        // by possibly removing the oldest oscillator
+        if self.oscillators.len() >= self.max_voices {
+            if let Some((_, osc, declick)) = self.oscillators.pop_front() {
+                self.stopping_oscillators.push_back((osc, declick));
             }
         }
 
         // add note
         self.oscillators.push_back((
             note_id,
-            (self.osc_generator)(note),
+            (self.osc_generator)(freq),
             0,
         ));
-        self.voice_count += 1;
+    }
+
+    fn set_note_frequency(&mut self, note_id: NoteId, freq: f64) {
+        if let Some((_, oscillator, _)) = self.oscillators.iter_mut()
+            .find(|(osc_note_id, _, _)| {
+                *osc_note_id == note_id
+            }) {
+            oscillator.set_frequency(freq as f32);
+        }
     }
 
     fn stop_playing_note(&mut self, note_id: NoteId) {
-        for (osc_note_id, _, declick) in self.oscillators.iter_mut() {
+        for (index, (osc_note_id, _, _)) in self.oscillators.iter().enumerate() {
             if *osc_note_id == note_id {
-                *declick *= -1;
-                self.voice_count -= 1;
+                let (_, osc, declick) = self.oscillators.remove(index).unwrap();
+                self.stopping_oscillators.push_back((osc, declick));
                 return;
             }
         }
     }
 
-    fn generate_sample(&mut self, sample_rate: u32) -> f32{
+    fn generate_sample(&mut self) -> f32{
         let mut sample = 0.0;
 
-        self.oscillators.retain_mut(|(_, oscillator, declick)| {
-            // generate initial sample for oscillator
-            let mut oscillator_sample = oscillator.generate_sample(sample_rate);
-            
-            // multiply by declick level
-            *declick = (*declick + 1).min(self.declick_samples as i32);
-            let declick_level = if *declick > 0 {
-                *declick
-            } else {
-                -*declick
-            }; 
-            oscillator_sample *= declick_level as f32 / self.declick_samples as f32;
+        // note: iterate through stopping_oscillators first to avoid duplicate samples
+        // when removing from oscillators
+        self.stopping_oscillators.retain_mut(|(osc, declick)| {
+            let mut oscillator_sample = osc.generate_sample(self.sample_rate);
 
-            // add to overall sample
+            *declick -= 1;
+            oscillator_sample *= *declick as f32 / self.declick_samples as f32;
+
             sample += oscillator_sample;
 
-            // remove oscillator if necessary
-            *declick != 0
+            *declick > 0
         });
+
+        let mut index = 0;
+        while index < self.oscillators.len() {
+            let (_, osc, declick) = &mut self.oscillators[index];
+
+            let mut oscillator_sample = osc.generate_sample(self.sample_rate);
+
+            *declick = (*declick + 1).min(self.declick_samples);
+            oscillator_sample *= *declick as f32 / self.declick_samples as f32;
+
+            sample += oscillator_sample;
+
+            if *declick <= 0 {
+                let (_, osc, declick) = self.oscillators.swap_remove_back(index).unwrap();
+                self.stopping_oscillators.push_back((osc, declick));
+            } else {
+                index += 1;
+            }
+        }
 
         sample * Self::AMPLITUDE_MULTIPLIER
     }
 
     fn stop_all(&mut self) {
-        self.oscillators.clear();
-        for (_, _, declick) in self.oscillators.iter_mut() {
-            *declick *= -1;
+        while let Some((_, osc, declick)) = self.oscillators.pop_back() {
+            self.stopping_oscillators.push_back((osc, declick));
         }
-        self.voice_count = 0;
     }
 
     fn set_parameter(&mut self, param_id: SynthParamId, value: f64) {
         match param_id.0 {
-            0 => self.declick_samples = value.round() as i32,
+            0 => self.declick_samples = value.round() as u32,
             1 => self.max_voices = value.round() as usize,
             _ => (),
         }

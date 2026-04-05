@@ -1,0 +1,23 @@
+
+notes and their respective slot commands
+
+  C-4 Start c4   
+   █
+   █
+   █
+   █
+     Stop
+
+
+  Ab4 Start ab4   
+   █
+   █
+   █
+   █
+   ▒   Lerp
+   ▒
+   ▒
+  C#5 Start c#5
+   █
+   █
+   █
