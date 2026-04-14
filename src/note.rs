@@ -1,6 +1,16 @@
 use std::str::FromStr;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct NoteId(u32);
+
+impl From<u32> for NoteId {
+    fn from(value: u32) -> Self {
+        Self(value)
+    }
+}
+
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Note(i32);
 
 impl Note {

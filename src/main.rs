@@ -2,7 +2,7 @@ use std::{io, str::FromStr, sync::OnceLock};
 
 use cpal::{StreamConfig, traits::{DeviceTrait, HostTrait, StreamTrait}};
 use ratatui::{DefaultTerminal, Frame, buffer::Buffer, crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers}, layout::{Position, Rect}, style::Stylize, symbols::border, text::{Line, Text}, widgets::{Block, Paragraph, Widget}};
-use rsynth::{osc_synths::PolyphonicOscSynth, *};
+use tracker_tui::{osc_synths::PolyphonicOscSynth, *};
 
 static TEST_PHRASE: OnceLock<&'static Phrase> = OnceLock::new();
 
@@ -26,10 +26,6 @@ fn main() -> io::Result<()> {
         for (notes, time) in composition {
             for (column, note_str) in notes.iter().enumerate() {
                 if let Ok(note) = Note::from_str(note_str) {
-                    while phrase.voice_count() <= column {
-                        phrase.add_voice();
-                    }
-
                     phrase.set_note(*time, column, Some(note));
                 }           
             }
@@ -37,7 +33,8 @@ fn main() -> io::Result<()> {
         Box::leak(phrase)
     }).expect("first thing in main function");
 
-    ratatui::run(|terminal| RsynthTuiApp::new().run(terminal))
+    //ratatui::run(|terminal| RsynthTuiApp::new().run(terminal))
+    ratatui::run(|terminal| TuiTrackerApp::new().run(terminal))
 }
 
 fn play_phrase() {
@@ -86,22 +83,21 @@ fn play_phrase() {
     loop {}
 }
 
+/*
 #[derive(Debug)]
 pub struct RsynthTuiApp {
     phrase: Phrase,
-    position: Position,
-    cell_pos: Position,
+    phrase_editor_data: PhraseEditorData,
     exit: bool
 }
 
 impl RsynthTuiApp {
     pub fn new() -> Self {
-        let mut phrase = Phrase::new(16, 40);
+        let mut phrase = Phrase::new(16, 16);
         phrase.set_note(0, 0, Some(Note::C4.add_semitones(1)));
         phrase.set_note(3, 0, Some(Note::A4));
         phrase.set_note(7, 0, Some(Note::C0));
         phrase.set_note(11, 0, Some(Note::B9));
-        phrase.add_voice();
         phrase.set_note(2, 1, Some(Note::B9));
         phrase.set_note(6, 1, Some(Note::B9));
         phrase.set_note(10, 1, Some(Note::B9));
@@ -114,8 +110,12 @@ impl RsynthTuiApp {
         phrase.set_effect(12, 0, Some(PhraseEffect::Silence));
         Self {
             phrase,
-            position: Position::MIN,
-            cell_pos: Position::new(0, 40),
+            phrase_editor_data: PhraseEditorData {
+                cell_pos: Position::MIN,
+                cam_pos: Position::MIN,
+                text: Some("helloww".to_string()),
+                focused: true,
+            },
             exit: false
         }
     }
@@ -149,11 +149,16 @@ impl RsynthTuiApp {
         match key_event.code {
             KeyCode::Char('q') => self.exit = true,
 
-            KeyCode::Char('j') => self.cell_pos.y = self.cell_pos.y.saturating_add(1),
-            KeyCode::Char('k') => self.cell_pos.y = self.cell_pos.y.saturating_sub(1),
+            KeyCode::Char('j') => self.phrase_editor_data.cell_pos.y = self.phrase_editor_data.cell_pos.y.saturating_add(1),
+            KeyCode::Char('k') => self.phrase_editor_data.cell_pos.y = self.phrase_editor_data.cell_pos.y.saturating_sub(1),
 
-            KeyCode::Char('h') => self.position.x = self.position.x.saturating_sub(1),
-            KeyCode::Char('l') => self.position.x = self.position.x.saturating_add(1),
+            KeyCode::Char('h') => self.phrase_editor_data.cell_pos.x = self.phrase_editor_data.cell_pos.x.saturating_sub(1),
+            KeyCode::Char('l') => self.phrase_editor_data.cell_pos.x = self.phrase_editor_data.cell_pos.x.saturating_add(1),
+
+            KeyCode::Char('J') => self.phrase_editor_data.cam_pos.y = self.phrase_editor_data.cam_pos.y.saturating_add(1),
+            KeyCode::Char('K') => self.phrase_editor_data.cam_pos.y = self.phrase_editor_data.cam_pos.y.saturating_sub(1),
+            KeyCode::Char('H') => self.phrase_editor_data.cam_pos.x = self.phrase_editor_data.cam_pos.x.saturating_sub(1),
+            KeyCode::Char('L') => self.phrase_editor_data.cam_pos.x = self.phrase_editor_data.cam_pos.x.saturating_add(1),
             _ => {}
         }
     }
@@ -161,13 +166,8 @@ impl RsynthTuiApp {
 
 impl Widget for &mut RsynthTuiApp {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let phrase_renderer = PhraseWidget {
-            phrase: &self.phrase,
-            cam_pos: &mut self.position,
-            cell_pos: &mut self.cell_pos,
-        };
-        phrase_renderer.render(area, buf);
-        /*
+        let phrase_editor = PhraseEditor::new(&mut self.phrase_editor_data, &self.phrase);
+        phrase_editor.render(area, buf);
         let title = Line::from(" Counter App Tutorial ".bold());
         let instructions = Line::from(vec![
             " Decrement ".into(),
@@ -198,11 +198,9 @@ impl Widget for &mut RsynthTuiApp {
             .centered()
             .block(block)
             .render(area, buf);
-*/
     }
 }
 
-/*
 // plays a fun little pattern lol
 fn play_pattern() {
     static PATTERN: OnceLock<&'static Pattern> = OnceLock::new();

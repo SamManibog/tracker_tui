@@ -1,16 +1,39 @@
-pub struct TinyMap<K: Ord, V>(Vec<(K, V)>);
+/// the result of handling input on a page
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum PageCommand<T> {
+    /// some result
+    Command(T),
 
-impl<K: Ord, V> TinyMap<K, V> {
-    pub fn new() -> Self {
-        Self(Vec::new())
-    }
+    /// exit the editor
+    Quit,
 
-    /// gets the value at the given key
-    pub fn get(&mut self, key: &K) -> Option<&V> {
-        let insert_index = self.0.binary_search_by_key(&key, |pair| &pair.0);
-        match insert_index {
-            Ok(index) => Some(&self.0[index].1),
-            Err(_) => None,
+    /// no operation
+    Nop,
+}
+
+impl<T> PageCommand<T> {
+    pub fn is_cmd(&self) -> bool {
+        if let PageCommand::Command(_) = self {
+            true
+        } else {
+            false
         }
     }
+
+    pub fn is_quit(&self) -> bool {
+        if let PageCommand::Quit = self {
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn is_nop(&self) -> bool {
+        if let PageCommand::Nop = self {
+            true
+        } else {
+            false
+        }
+    }
+
 }

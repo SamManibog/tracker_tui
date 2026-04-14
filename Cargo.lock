@@ -1364,14 +1364,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
 
 [[package]]
-name = "rsynth"
-version = "0.1.0"
-dependencies = [
- "cpal",
- "ratatui",
-]
-
-[[package]]
 name = "rustc_version"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1736,6 +1728,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2334f11ee363607eb04df9b8fc8a13ca1715a72ba8662a26ac285c98aabb4011"
 dependencies = [
  "winnow",
+]
+
+[[package]]
+name = "tracker_tui"
+version = "0.1.0"
+dependencies = [
+ "cpal",
+ "ratatui",
 ]
 
 [[package]]

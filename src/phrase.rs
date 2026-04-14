@@ -1,23 +1,21 @@
-use std::{collections::{BTreeMap, btree_map}, iter::Peekable, u32};
-
-use ratatui::{layout::{Position, Rect}, style::{Color, Style}, text::Text, widgets::Widget};
+use std::{collections::{BTreeMap, HashMap, btree_map}, fmt::Display, iter::Peekable, str::FromStr, u32};
 
 use crate::Note;
 
 /// a vector of voice units, sorted by time
 /// voice units cannot occupy the same timeslot
 #[derive(Debug, Default, Clone)]
-struct Voice(BTreeMap<u32, Note>);
+pub struct Voice(BTreeMap<u32, Note>);
 
 impl Voice {
     // gets the note at the given time
-    fn get_note(&self, time_step: u32) -> Option<Note> {
+    pub fn get_note(&self, time_step: u32) -> Option<Note> {
         self.0.get(&time_step).cloned()
     }
 
     // sets the given note (or nothing) to play at the given time
     // returns the note originally at that time
-    fn set_note(&mut self, time_step: u32, note_opt: Option<Note>) -> Option<Note> {
+    pub fn set_note(&mut self, time_step: u32, note_opt: Option<Note>) -> Option<Note> {
         if let Some(note) = note_opt {
             self.0.insert(time_step, note)
         } else {
@@ -27,7 +25,7 @@ impl Voice {
 }
 
 #[derive(Debug, Default, Clone)]
-struct PhraseEffectsBuffer(BTreeMap<u32, Box<[Option<PhraseEffect>; Phrase::FX_COLUMNS]>>);
+pub struct PhraseEffectsBuffer(BTreeMap<u32, Box<[Option<PhraseEffect>; Phrase::FX_COLUMNS]>>);
 
 impl PhraseEffectsBuffer {
     fn new() -> Self {
@@ -35,7 +33,7 @@ impl PhraseEffectsBuffer {
     }
 
     // gets the list of effects at the given time
-    fn get_effect_list(&self, time_step: u32) -> Option<&[Option<PhraseEffect>]> {
+    pub fn get_effect_list(&self, time_step: u32) -> Option<&[Option<PhraseEffect>]> {
         if let Some(boxed) = self.0.get(&time_step) { 
             Some(boxed.as_slice())
         } else {
@@ -45,7 +43,7 @@ impl PhraseEffectsBuffer {
 
     // sets the given note (or nothing) to play at the given time
     // returns the note originally at that time
-    fn set_effect(
+    pub fn set_effect(
         &mut self,
         time_step: u32,
         column: usize,
@@ -71,7 +69,7 @@ impl PhraseEffectsBuffer {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PhraseEffect {
     /// set the transition type for all notes created while active
     SetTransition(PhraseTransitionMode),
@@ -90,6 +88,36 @@ impl PhraseEffect {
     }
 }
 
+impl Display for PhraseEffect {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let text = match self {
+            PhraseEffect::SetTransition(transition) => transition.to_string(),
+
+            PhraseEffect::Silence => "Silence".to_string(),
+        };
+
+        write!(f, "{}", text)
+    }
+}
+
+impl FromStr for PhraseEffect {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let map = HashMap::from([
+            ("rel", PhraseEffect::SetTransition(PhraseTransitionMode::Release)),
+            ("lrp", PhraseEffect::SetTransition(PhraseTransitionMode::Lerp)),
+            ("shh", PhraseEffect::Silence),
+        ]);
+
+        if let Some(item) = map.get(s) {
+            Ok(*item)
+        } else {
+            Err(())
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PhraseTransitionMode {
     /// enable release-right-before note transitions
@@ -97,6 +125,23 @@ pub enum PhraseTransitionMode {
 
     /// enable lerp note transitions
     Lerp,
+}
+
+impl Default for PhraseTransitionMode {
+    fn default() -> Self {
+        Self::Release
+    }
+}
+
+impl Display for PhraseTransitionMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let text = match self {
+            PhraseTransitionMode::Release => "Release",
+            PhraseTransitionMode::Lerp => "Linear Interpolate",
+        };
+
+        write!(f, "{}", text)
+    }
 }
 
 impl PhraseTransitionMode {
@@ -121,7 +166,7 @@ pub struct Phrase {
     subdivisions: u32,
 
     /// the voices in the phrase
-    voices: Vec<Voice>,
+    voices: Box<[Voice; Self::VOICE_COLUMNS]>,
 
     /// the effects in the phrase
     effects: PhraseEffectsBuffer,
@@ -139,8 +184,8 @@ impl Phrase {
     /// for a phrase
     pub const MAX_SUBDIVISION_MULTIPLIER: u32 = 1;
     
-    /// the maximum number of voices in a phrase
-    pub const MAX_VOICES: usize = 16;
+    /// the number of voices in a phrase
+    pub const VOICE_COLUMNS: usize = 16;
 
     /// the maximum number of fx columns in a phrase
     pub const FX_COLUMNS: usize = 8;
@@ -155,6 +200,21 @@ impl Phrase {
         self.duration
     }
 
+    /// gets the number of subdivisions
+    pub const fn subdivisions(&self) -> u32 {
+        self.subdivisions
+    }
+
+    /// gets the voices in the phrase
+    pub const fn voices(&self) -> &[Voice] {
+        self.voices.as_slice()
+    }
+
+    /// gets the effects in the phrase
+    pub const fn effects(&self) -> &PhraseEffectsBuffer {
+        &self.effects
+    }
+
     /// gets the number of voices in the phrase. the voices may be empty
     pub const fn voice_count(&self) -> usize {
         self.voices.len()
@@ -167,7 +227,7 @@ impl Phrase {
         Self {
             duration,
             subdivisions,
-            voices: vec![Voice::default()],
+            voices: Box::new(Default::default()),
             effects: PhraseEffectsBuffer::new(),
         }
     }
@@ -186,16 +246,6 @@ impl Phrase {
             self.effects.set_effect(time_step, column, fx_opt)
         } else {
             None
-        }
-    }
-
-    /// adds a voice to the phrase, returning true on success
-    pub fn add_voice(&mut self) -> bool {
-        if self.voices.len() < Self::MAX_VOICES {
-            self.voices.push(Voice::default());
-            true
-        } else {
-            false
         }
     }
 
@@ -224,210 +274,6 @@ impl Phrase {
     /// gets an iterator over the commands in the phrase
     pub fn iter(&self) -> PhraseCommandIterator {
         PhraseCommandIterator::new(self)
-    }
-}
-
-/// a temporary Ratatui widget used to display a phrase
-pub struct PhraseWidget<'a> {
-    /// the phrase to draw
-    pub phrase: &'a Phrase,
-
-    /// the position of the camera
-    pub cam_pos: &'a mut Position,
-
-    /// the position of the selected cell
-    pub cell_pos: &'a mut Position,
-}
-
-impl<'a> PhraseWidget<'a> {
-    pub const VERTICAL_PADDING: usize = 0;
-    pub const HORIZONTAL_PADDING: usize = 0;
-
-    pub const NOTE_WIDTH: u16 = 3;
-    pub const FX_WIDTH: u16 = 6;
-
-    pub const LINE_NUMBER_COLOR: Color = Color::Yellow;
-	pub const EMPTY_COLOR: Color = Color::DarkGray;
-    pub const FILLED_COLOR: Color = Color::White;
-}
-
-impl Widget for PhraseWidget<'_> {
-    fn render(
-        self,
-        area: ratatui::prelude::Rect,
-        buf: &mut ratatui::prelude::Buffer
-    ) where Self: Sized {
-        // clamp cell position
-        if self.cell_pos.x >= Phrase::FX_COLUMNS as u16{
-            if self.cell_pos.x as usize - Phrase::FX_COLUMNS >= self.phrase.voice_count() {
-                self.cell_pos.x = (Phrase::FX_COLUMNS + self.phrase.voice_count()) as u16 - 1;
-            }
-            if self.cell_pos.y >= self.phrase.subdivisions as u16 {
-                self.cell_pos.y = self.phrase.subdivisions as u16 - 1;
-            }
-        } else if self.cell_pos.y > self.phrase.subdivisions as u16 {
-            self.cell_pos.y = self.phrase.subdivisions as u16;
-        }
-
-        if area.height <= 0 {
-            return;
-        }
-
-        // clamp camera y position to the correct bounds
-        // must have 1+ visible row and contain the current cell
-        self.cam_pos.y = self.cam_pos.y.clamp((self.cell_pos.y + 1).saturating_sub(area.height), self.cell_pos.y);
-
-        // the first line number
-        let start_line_number = self.cam_pos.y;
-
-        // the last line number (inclusive)
-        let end_fx_line_number = (start_line_number + area.height - 1)
-            .min(self.phrase.subdivisions as u16);
-        let end_note_line_number = (start_line_number + area.height - 1)
-            .min(self.phrase.subdivisions as u16 - 1);
-
-        // the number of characters needed for the line number
-        let fx_line_number_digits = ((self.phrase.subdivisions + 1).ilog2() as u16) / 4 + 1;
-        let note_line_number_digits = ((self.phrase.subdivisions).ilog2() as u16) / 4 + 1;
-
-        // clamp camera x position to the correct bounds (must have 1+ visible column)
-        self.cam_pos.x = self.cam_pos.x.min(
-            // line numbers and spacing
-            fx_line_number_digits + 1
-
-            // fx_columns + spacing
-            + Phrase::FX_COLUMNS as u16 * (Self::FX_WIDTH + 1)
-
-            // voices + spacing
-            + (self.phrase.voice_count() as u16 - 1) * (Self::NOTE_WIDTH + 1)
-        );
-        let x_offset = self.cam_pos.x;
-
-        // x_cursor must be greater than this in order to render fully
-        let x_threshold = x_offset + fx_line_number_digits + 1;
-
-        // render begining line numbers (camera-stable, no need threshold checking)
-        if area.width < fx_line_number_digits {
-            return;
-        }
-        for i in start_line_number..=end_fx_line_number {
-            let number_text = Text::from(format!("{:X}", i))
-                .style(Style::new().fg(Self::LINE_NUMBER_COLOR))
-                .right_aligned();
-            number_text.render(Rect::new(area.x, i - start_line_number, fx_line_number_digits, 1), buf);
-        }
-
-        // the cursor to draw the current column of notes or effects
-        let mut cursor_x = area.x + fx_line_number_digits + 1;
-
-        // render effects
-        let empty_fx_text = Text::from("------")
-                    .style(Style::new().fg(Self::EMPTY_COLOR));
-        let empty_fx_list = &[{None}; Phrase::FX_COLUMNS];
-        if cursor_x + Self::FX_WIDTH > area.x + area.width {
-            return;
-        }
-        // iteration over effect_lists before columns has O(nlogn) time complexity
-        // iteration over columns then effect lists has O(mnlogn) time complexity
-        for i in start_line_number..=end_fx_line_number {
-            let mut fx_cursor_x = cursor_x;
-            let effect_list = self.phrase.effects.get_effect_list(i as u32).unwrap_or(empty_fx_list);
-
-            'draw_fx: for (column, effect_opt) in effect_list.iter().enumerate() {
-                if fx_cursor_x + Self::FX_WIDTH > area.x + area.width {
-                    break 'draw_fx;
-                }
-
-                // the number of cells we have to render in
-                if fx_cursor_x >= x_threshold {
-                    let text = if let Some(effect) = effect_opt {
-                        &Text::from(format!("{}:ff", effect.abbreviate()))
-                            .style(Style::new().fg(Self::FILLED_COLOR))
-                    } else {
-                        &empty_fx_text
-                    };
-                    if i == self.cell_pos.y && column as u16 == self.cell_pos.x {
-                        text.clone()
-                            .patch_style(Style::new().reversed())
-                            .render(Rect::new(
-                                fx_cursor_x - x_offset,
-                                i - start_line_number,
-                                Self::FX_WIDTH,
-                                1), buf);
-                    } else {
-                        text.render(Rect::new(
-                            fx_cursor_x - x_offset,
-                            i - start_line_number,
-                            Self::FX_WIDTH,
-                            1), buf);
-                    };
-                }
-
-                fx_cursor_x += Self::FX_WIDTH + 1;
-            }
-        }
-
-        // second line number
-        cursor_x += (Self::FX_WIDTH + 1) * Phrase::FX_COLUMNS as u16;
-        if cursor_x + fx_line_number_digits > area.x + area.width {
-            return;
-        }
-        if cursor_x >= x_threshold {
-            for i in start_line_number..=end_fx_line_number {
-                let number_text = Text::from(format!("{:X}", i))
-                    .style(Style::new().fg(Self::LINE_NUMBER_COLOR))
-                    .right_aligned();
-                number_text.render(Rect::new(
-                    cursor_x - x_offset,
-                    i - start_line_number,
-                    fx_line_number_digits, 1), buf);
-            }
-        }
-
-        // render voices
-        let empty_note_text = Text::from("---")
-            .style(Style::new().fg(Self::EMPTY_COLOR));
-        cursor_x += fx_line_number_digits + 1;
-        for voice in &self.phrase.voices {
-            if cursor_x + Self::NOTE_WIDTH > area.x + area.width {
-                return;
-            }
-
-            if cursor_x >= x_threshold {
-                for i in start_line_number..=end_note_line_number {
-                    let text = if let Some(note) = voice.get_note(i as u32) {
-                        &Text::from(note.to_padded_string_sharps())
-                            .style(Style::new().fg(Self::FILLED_COLOR))
-                    } else {
-                        &empty_note_text
-                    };
-                    text.render(Rect::new(
-                            cursor_x - x_offset,
-                            i - start_line_number,
-                            Self::NOTE_WIDTH,
-                            1), buf);
-                }
-            }
-
-            cursor_x += Self::NOTE_WIDTH + 1;
-        }
-
-        if cursor_x + note_line_number_digits > area.x + area.width {
-            return;
-        }
-
-        // render line numbers again
-        // we do not need to check for x_threshold bounds because of camera positioning rules
-        for i in start_line_number..=end_note_line_number {
-            let number_text = Text::from(format!("{:X}", i))
-                .style(Style::new().fg(Self::LINE_NUMBER_COLOR));
-            number_text.render(Rect::new(
-                cursor_x - x_offset,
-                i - start_line_number,
-                note_line_number_digits,
-                1), buf);
-        }
-
     }
 }
 
@@ -479,7 +325,7 @@ pub struct PhraseCommandIterator<'a> {
 impl<'a> PhraseCommandIterator<'a> {
     pub fn new(phrase: &'a Phrase) -> Self {
         let mut voice_iters = Vec::new();
-        for voice in &phrase.voices {
+        for voice in phrase.voices.iter() {
             voice_iters.push((
                 PhraseTransitionMode::Release,
                 voice.0.iter().peekable()
