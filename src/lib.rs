@@ -10,13 +10,15 @@ pub use note::*;
 // pub mod patterns;
 // pub use patterns::*;
 
+pub mod playback;
+
 pub mod phrase;
 pub use phrase::*;
 
 pub mod phrase_edit_command;
 
-pub mod phrase_player;
-pub use phrase_player::*;
+// pub mod phrase_player;
+// pub use phrase_player::*;
 
 pub mod phrase_editor;
 pub use phrase_editor::*;

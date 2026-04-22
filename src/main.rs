@@ -2,7 +2,7 @@ use std::{io, str::FromStr, sync::OnceLock};
 
 use cpal::{StreamConfig, traits::{DeviceTrait, HostTrait, StreamTrait}};
 use ratatui::{DefaultTerminal, Frame, buffer::Buffer, crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers}, layout::{Position, Rect}, style::Stylize, symbols::border, text::{Line, Text}, widgets::{Block, Paragraph, Widget}};
-use tracker_tui::{osc_synths::PolyphonicOscSynth, *};
+use tracker_tui::{osc_synths::PolyphonicOscSynth, playback::{GlobalPlaybackState, PhrasePlaybackState}, *};
 
 static TEST_PHRASE: OnceLock<&'static Phrase> = OnceLock::new();
 
@@ -33,8 +33,10 @@ fn main() -> io::Result<()> {
         Box::leak(phrase)
     }).expect("first thing in main function");
 
-    //ratatui::run(|terminal| RsynthTuiApp::new().run(terminal))
-    ratatui::run(|terminal| TuiTrackerApp::new().run(terminal))
+    //ratatui::run(|terminal| TuiTrackerApp::new().run(terminal))
+    play_phrase();
+
+    Ok(())
 }
 
 fn play_phrase() {
@@ -53,23 +55,27 @@ fn play_phrase() {
 
     let &phrase_ref = TEST_PHRASE.get().unwrap();
     let synth_box = (PolyphonicOscSynth::saw_specification().generate_synth)();
-    let synth = Box::leak(synth_box);
+    let mut synth_box = unsafe { std::mem::transmute::<_, Box<dyn Synthesizer + Send>>(synth_box) };
 
-    let mut phrase_player = PhrasePlayer::new(
-        phrase_ref,
-        synth,
-        sample_rate,
-        10.0/60.0
-    );
+    let mut global_state = GlobalPlaybackState {
+        wholes_per_second: 10.0/60.0,
+        sample_rate: sample_rate,
+        sample_index: 0,
+    };
+    let mut phrase_state: Option<PhrasePlaybackState> = Some(Default::default());
 
     let stream = device.build_output_stream(
         &config,
         move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-			let mut samples = data.iter_mut();
-            while let (Some(left), Some(right)) = (samples.next(), samples.next()) {
-                let sample = phrase_player.next().unwrap();
-                *left = sample;
-                *right = sample
+            if let Some(index) = playback::play_phrase(
+                phrase_ref,
+                synth_box.as_mut(),
+                &mut phrase_state,
+                &mut global_state, data
+            ) {
+                for sample in data.iter_mut().skip(index) {
+                    *sample = 0.0;
+                }
             }
         },
         move |_err| {
