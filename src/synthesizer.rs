@@ -135,7 +135,7 @@ pub trait Synthesizer {
     /// set the frequency of the given note
     fn set_note_frequency(&mut self, note_id: NoteId, freq: f64);
 
-    /// the given note the the frequency over the given duration in seconds
+    /// the given note the the frequency over the given duration in whole notes
     fn lerp_note(&mut self, note_id: NoteId, freq: f64, duration: f64);
 
     /// tell the synthesizer to stop playing a note.
@@ -147,8 +147,8 @@ pub trait Synthesizer {
     /// tell the synthesizer to stop playing all notes
     fn stop_all(&mut self);
 
-    /// generate a single sample assuming the given sample rate
-    fn generate_sample(&mut self) -> f32;
+    /// generate a single sample assuming the given sample rate and whole-note delta
+    fn generate_sample(&mut self, whole_delta: f64) -> f32;
 }
 
 /// describes the state of the output stream

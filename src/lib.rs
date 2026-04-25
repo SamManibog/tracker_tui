@@ -31,4 +31,6 @@ pub mod osc_synths;
 pub mod app;
 pub use app::*;
 
+pub mod arrangement;
+
 mod utils;

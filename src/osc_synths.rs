@@ -190,7 +190,7 @@ impl Synthesizer for PolyphonicOscSynth {
         }
     }
 
-    fn generate_sample(&mut self) -> f32{
+    fn generate_sample(&mut self, whole_delta: f64) -> f32{
         let mut sample = 0.0;
 
         // note: iterate through stopping_oscillators first to avoid duplicate samples

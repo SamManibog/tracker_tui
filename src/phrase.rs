@@ -1,6 +1,6 @@
 use std::{collections::{BTreeMap, HashMap, btree_map}, fmt::Display, iter::Peekable, ops::Bound, str::FromStr, u32};
 
-use crate::{Note, playback::PhrasePlaybackState};
+use crate::Note;
 
 /// a vector of voice units, sorted by time
 /// voice units cannot occupy the same timeslot
@@ -291,12 +291,25 @@ pub enum PhraseCommand {
     EndPhrase,
 }
 
+/// the state of a voice
+#[derive(Debug, Default)]
+pub struct VoicePlaybackState {
+    /// the transition mode for the currently-playing note
+    pub current_transition_mode: PhraseTransitionMode,
+
+    /// the transition mode for the next note to play
+    pub next_transition_mode: PhraseTransitionMode,
+}
+
 /// an iterator over the PhraseOutputCommands in a phrase
 /// if storing this, it is recommended to keep this in a box; its quite large
 #[derive(Debug)]
 pub struct PhraseCommandIterator<'a> {
     /// the a vector of (original transition when creating previous note, iterator over notes)
     voice_iters: Vec<Peekable<btree_map::Range<'a, u32, Note>>>,
+
+    /// the states of each voice
+    voice_states: Box<[VoicePlaybackState; Phrase::VOICE_COLUMNS]>,
     
     /// an iterator over the effects on each step
     fx_iter: Peekable<btree_map::Range<'a, u32, Box<[Option<PhraseEffect>; Phrase::FX_COLUMNS]>>>,
@@ -316,41 +329,52 @@ pub struct PhraseCommandIterator<'a> {
 
     /// the duration of the phrase
     duration: u32,
+
+    /// if iteration is over
+    is_done: bool,
 }
 
 impl<'a> PhraseCommandIterator<'a> {
+    /// creates a new command iterator over all commands in a phrase
+    pub fn from_phrase(phrase: &'a Phrase) -> Self {
+        Self::from_time_step(phrase, 0)
+    }
+
     /// creates a new command iterator that will process commands at and beyond the given timestep
-    /// note: does not modify the phrase, just there for convenience through DRY
-    pub fn from_playback_state(phrase: &'a Phrase, state: &mut PhrasePlaybackState) -> Self {
+    pub fn from_time_step(phrase: &'a Phrase, time_step: u32) -> Self {
         let mut voice_iters = Vec::new();
         for voice in phrase.voices.iter() {
             voice_iters.push(
-                voice.0.range((Bound::Included(state.time_step), Bound::Unbounded))
+                voice.0.range((Bound::Included(time_step), Bound::Unbounded))
                     .peekable()
             );
         }
-        let fx_iter = phrase.effects.0.range((Bound::Included(state.time_step), Bound::Unbounded))
+        let fx_iter = phrase.effects.0.range((Bound::Included(time_step), Bound::Unbounded))
             .peekable();
 
         let mut output = Self {
             voice_iters,
             fx_iter,
+            voice_states: Default::default(),
             next: Vec::new(),
             next_step: 0,
             next_time: 0.0,
             subdivisions: phrase.subdivisions,
             duration: phrase.duration,
+            is_done: false,
         };
-        output.calculate_next(state);
+        output.calculate_next();
         output
     }
 
     /// fills the next, next_subdivision, and next_time fields
     /// assumes that self.next is empty
-    fn calculate_next(&mut self, state: &mut PhrasePlaybackState) {
+    fn calculate_next(&mut self) {
         debug_assert!(self.next.is_empty(), "next should be empty before calculate_next call");
 
         type C = PhraseCommand;
+
+        let prev_step = self.next_step;
 
         // calculate next_step field
         self.next_step = self.subdivisions;
@@ -363,16 +387,14 @@ impl<'a> PhraseCommandIterator<'a> {
             }
         }
 
+        // determine if iteration is over (signalled by next being empty)
+        if prev_step >= self.next_step {
+            return;
+        }
+
         // calculate next_time in whole notes
         self.next_time = (self.next_step * self.duration) as f64
             / self.subdivisions as f64 / Phrase::TICKS_PER_WHOLE_NOTE as f64;
-
-
-        // if we iterated through all commands...
-        if self.next_step >= self.subdivisions {
-            self.next.push(C::EndPhrase);
-            return;
-        }
 
         // calculate next field
 
@@ -388,7 +410,7 @@ impl<'a> PhraseCommandIterator<'a> {
                                 self.next.push(C::Silence)
                             },
                             E::SetTransition(transition) => {
-                                state.voice_states[voice].next_transition_mode = *transition;
+                                self.voice_states[voice].next_transition_mode = *transition;
                             }
                         };
                     }
@@ -404,8 +426,8 @@ impl<'a> PhraseCommandIterator<'a> {
                 if **time == self.next_step {
 
                     let (time, note) = voice_iter.next().unwrap();
-                    let current_transition = &mut state.voice_states[voice as usize].current_transition_mode;
-                    let next_transition = state.voice_states[voice as usize].next_transition_mode;
+                    let current_transition = &mut self.voice_states[voice as usize].current_transition_mode;
+                    let next_transition = self.voice_states[voice as usize].next_transition_mode;
 
                     // handle original transition mode: release
                     if *current_transition == PhraseTransitionMode::Release {
@@ -435,18 +457,10 @@ impl<'a> PhraseCommandIterator<'a> {
             }
             voice += 1;
         }
-    }
 
-    /// gets the next item, updating state to match
-    pub fn next(&mut self, state: &mut PhrasePlaybackState) -> Option<(f64, Vec<PhraseCommand>)> {
-        if self.next.is_empty() {
-            None
-        } else {
-            let mut output = (self.next_time, Vec::new());
-            std::mem::swap(&mut output.1, &mut self.next);
-            self.calculate_next(state);
-            state.time_step = self.next_step;
-            Some(output)
+        // if we iterated through all commands, end the phrase
+        if self.next_step == self.subdivisions {
+            self.next.push(C::EndPhrase);
         }
     }
 
@@ -457,5 +471,23 @@ impl<'a> PhraseCommandIterator<'a> {
         }
 
         Some((self.next_time, &self.next))
+    }
+}
+
+impl<'a> Iterator for PhraseCommandIterator<'a> {
+    type Item = (f64, Vec<PhraseCommand>);
+
+    /// gets the next item, updating state to match
+    /// on the iteration immediately before ending, the vector will contain
+    /// an endphrase command as the last element
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.next.is_empty() {
+            None
+        } else {
+            let mut output = (self.next_time, Vec::new());
+            std::mem::swap(&mut output.1, &mut self.next);
+            self.calculate_next();
+            Some(output)
+        }
     }
 }

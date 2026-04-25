@@ -1,15 +1,56 @@
+use std::fmt::{Debug, Display};
+
 use crate::{Phrase, PhraseEffect};
 
-/// a trait for a command emitted by a phrase editor
-pub trait PhraseEditCommand {
-    /// get a short summary of the command possibly displayed when command occurs
-    fn summary(&self) -> String;
-    
-    /// execute the command, and return a command to undo the execution if a change was made
-    fn execute(&self, phrase: &mut Phrase) -> Option<Box<dyn PhraseEditCommand>>;
+/// An enum for commands emitted by a phrase editor
+#[derive(Debug, Clone)]
+pub enum PhraseEditCommand {
+    SetEffect(PhraseSetEffect),
+    ClearEffects(PhraseClearEffects),
+    RestoreEffects(PhraseRestoreEffects),
 }
 
+impl std::fmt::Display for PhraseEditCommand {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PhraseEditCommand::SetEffect(cmd) => std::fmt::Display::fmt(cmd, f),
+            PhraseEditCommand::ClearEffects(cmd) => std::fmt::Display::fmt(cmd, f),
+            PhraseEditCommand::RestoreEffects(cmd) => std::fmt::Display::fmt(cmd, f),
+        }
+    }
+}
+
+impl PhraseEditCommand {
+    /// execute the command, and return a command to undo the execution if a change was made
+    pub fn execute(&self, phrase: &mut Phrase) -> Option<Self> {
+        match self {
+            PhraseEditCommand::SetEffect(cmd) => cmd.execute(phrase).map(PhraseEditCommand::from),
+            PhraseEditCommand::ClearEffects(cmd) => cmd.execute(phrase).map(PhraseEditCommand::from),
+            PhraseEditCommand::RestoreEffects(cmd) => cmd.execute(phrase).map(PhraseEditCommand::from),
+        }
+    }
+}
+
+impl From<PhraseSetEffect> for PhraseEditCommand {
+    fn from(cmd: PhraseSetEffect) -> Self {
+        PhraseEditCommand::SetEffect(cmd)
+    }
+}
+impl From<PhraseClearEffects> for PhraseEditCommand {
+    fn from(cmd: PhraseClearEffects) -> Self {
+        PhraseEditCommand::ClearEffects(cmd)
+    }
+}
+impl From<PhraseRestoreEffects> for PhraseEditCommand {
+    fn from(cmd: PhraseRestoreEffects) -> Self {
+        PhraseEditCommand::RestoreEffects(cmd)
+    }
+}
+
+// Removed: impl Clone for Box<dyn PhraseEditCommand>
+
 /// a phrase edit command that sets a single effect
+#[derive(Debug, Clone)]
 pub struct PhraseSetEffect {
     pub effect: PhraseEffect,
     pub row: u32,
@@ -26,12 +67,14 @@ impl PhraseSetEffect {
     }
 }
 
-impl PhraseEditCommand for PhraseSetEffect {
-    fn summary(&self) -> String {
-        format!("Set r{}:c{} to {}", self.row, self.column, self.effect)
+impl Display for PhraseSetEffect {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Set r{}:c{} to {}", self.row, self.column, self.effect)
     }
+}
 
-    fn execute(&self, phrase: &mut Phrase) -> Option<Box<dyn PhraseEditCommand>> {
+impl PhraseSetEffect {
+    pub fn execute(&self, phrase: &mut Phrase) -> Option<PhraseEditCommand> {
         // make sure we are working in the phrase
         if self.column >= Phrase::FX_COLUMNS as usize {
             return None;
@@ -46,15 +89,16 @@ impl PhraseEditCommand for PhraseSetEffect {
             if old_effect == self.effect {
                 None
             } else {
-                Some(Box::new(Self::new(old_effect, self.row, self.column)))
+                Some(Self::new(old_effect, self.row, self.column).into())
             }
         } else {
-            Some(Box::new(PhraseClearEffects::new_cell(self.row, self.column)))
+            Some(PhraseClearEffects::new_cell(self.row, self.column).into())
         }
     }
 }
 
 /// a phrase clear command clears effects in a range
+#[derive(Debug, Clone)]
 pub struct PhraseClearEffects {
     pub rows: (u32, u32),
     pub columns: (usize, usize),
@@ -78,16 +122,18 @@ impl PhraseClearEffects {
     }
 }
 
-impl PhraseEditCommand for PhraseClearEffects {
-    fn summary(&self) -> String {
+impl Display for PhraseClearEffects {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if self.rows.0 == self.rows.1 && self.columns.0 == self.columns.1 {
-            format!(
+            write!(
+                f,
                 "Cleared r{}:c{}",
                 self.rows.0,
                 self.columns.0
             )
         } else {
-            format!(
+            write!(
+                f,
                 "Cleared r{}-{}:c{}-{}",
                 self.rows.0,
                 self.rows.1,
@@ -96,8 +142,10 @@ impl PhraseEditCommand for PhraseClearEffects {
             )
         }
     }
+}
 
-    fn execute(&self, phrase: &mut Phrase) -> Option<Box<dyn PhraseEditCommand>> {
+impl PhraseClearEffects {
+    pub fn execute(&self, phrase: &mut Phrase) -> Option<PhraseRestoreEffects> {
         let mut is_empty = true;
         let mut buffer = Vec::new();
         for r in self.rows.0..=self.rows.1 {
@@ -112,24 +160,27 @@ impl PhraseEditCommand for PhraseClearEffects {
         if is_empty {
             None
         } else {
-            Some(Box::new(PhraseRestoreEffects {
+            Some(PhraseRestoreEffects {
                 cells: buffer,
-            }))
+            })
         }
     }
 }
 
 /// a phrase command to restore cleared effects, only creatable through executing PhraseClearEffects
+#[derive(Debug, Clone)]
 pub struct PhraseRestoreEffects {
     pub cells: Vec<(u32, usize, Option<PhraseEffect>)>,
 }
 
-impl PhraseEditCommand for PhraseRestoreEffects {
-    fn summary(&self) -> String {
-        format!("Restored {} effect(s)", self.cells.len())
+impl Display for PhraseRestoreEffects {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Restored {} effect(s)", self.cells.len())
     }
+}
 
-    fn execute(&self, phrase: &mut Phrase) -> Option<Box<dyn PhraseEditCommand>> {
+impl PhraseRestoreEffects {
+    pub fn execute(&self, phrase: &mut Phrase) -> Option<PhraseRestoreEffects> {
         let mut redo = Vec::new();
         let mut is_empty = true;
         for &(r, c, effect_opt) in &self.cells {
@@ -142,7 +193,7 @@ impl PhraseEditCommand for PhraseRestoreEffects {
         if is_empty {
             None
         } else {
-            Some(Box::new(PhraseRestoreEffects { cells: redo }))
+            Some(PhraseRestoreEffects { cells: redo })
         }
     }
 }

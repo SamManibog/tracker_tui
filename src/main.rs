@@ -62,6 +62,7 @@ fn play_phrase() {
         sample_rate: sample_rate,
         sample_index: 0,
     };
+
     let mut phrase_state: Option<PhrasePlaybackState> = Some(Default::default());
 
     let stream = device.build_output_stream(

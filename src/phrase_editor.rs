@@ -2,6 +2,12 @@ use ratatui::{crossterm::event::{KeyCode, KeyEvent, KeyModifiers}, layout::{Posi
 
 use crate::{Phrase, PhraseEffect, phrase_edit_command::{PhraseClearEffects, PhraseEditCommand, PhraseSetEffect}, utils::PageCommand};
 
+#[derive(Debug, Clone)]
+pub enum PhraseEditorCommand {
+    Edit(PhraseEditCommand),
+    PlayPhrase,
+}
+
 /// the mode of the phrase editor
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PhraseEditorMode {
@@ -357,10 +363,10 @@ impl PhraseEditor {
         &mut self,
         phrase: &Phrase,
         event: KeyEvent
-    ) -> PageCommand<Box<dyn PhraseEditCommand>> {
+    ) -> PageCommand<PhraseEditorCommand> {
         type C = KeyCode;
 
-        let mut output: PageCommand<Box<dyn PhraseEditCommand>> = PageCommand::Nop;
+        let mut output: PageCommand<PhraseEditorCommand> = PageCommand::Nop;
 
         // handle number control
         if let C::Char(character) = event.code && let Some(digit) = character.to_digit(10) {
@@ -390,12 +396,12 @@ impl PhraseEditor {
 
                     // edit commands
                     'x' => {
-                        output = PageCommand::Command(Box::new(
-                            PhraseClearEffects::new_cell(
+                        output = PageCommand::Command(
+                            PhraseEditorCommand::Edit(PhraseClearEffects::new_cell(
                                 self.cell_pos.y.into(),
                                 self.cell_pos.x.into()
-                            )
-                        ));
+                            ).into())
+                        );
                     },
 
                     'q' => { output = PageCommand::Quit; },
@@ -419,9 +425,8 @@ impl PhraseEditor {
     /// handle an event in insert mode
     fn insert_handle_key_event(
         &mut self,
-        phrase: &Phrase,
         event: KeyEvent
-    ) -> PageCommand<Box<dyn PhraseEditCommand>> {
+    ) -> PageCommand<PhraseEditorCommand> {
         // handle regular typing
         if event.modifiers == KeyModifiers::empty() {
             match event.code {
@@ -434,20 +439,20 @@ impl PhraseEditor {
                 KeyCode::Enter => {
                     self.mode = PhraseEditorMode::Normal;
                     if self.text.is_empty() {
-                        return PageCommand::Command(Box::new(
-                            PhraseClearEffects::new_cell(
+                        return PageCommand::Command(
+                            PhraseEditorCommand::Edit(PhraseClearEffects::new_cell(
                                 self.cell_pos.y.into(),
                                 self.cell_pos.x.into()
-                            )
-                        ));
+                            ).into())
+                        );
                     } else if let Ok(fx) = str::parse::<PhraseEffect>(&self.text) {
-                        return PageCommand::Command(Box::new(
-                            PhraseSetEffect::new(
+                        return PageCommand::Command(
+                            PhraseEditorCommand::Edit(PhraseSetEffect::new(
                                 fx,
                                 self.cell_pos.y.into(),
                                 self.cell_pos.x.into()
-                            )
-                        ));
+                            ).into())
+                        );
                     }
                 },
 
@@ -472,11 +477,11 @@ impl PhraseEditor {
         &mut self,
         phrase: &Phrase,
         event: KeyEvent,
-    ) -> PageCommand<Box<dyn PhraseEditCommand>> {
+    ) -> PageCommand<PhraseEditorCommand> {
         // note: upper level call for this event is already known to be a press
         match self.mode {
             PhraseEditorMode::Normal => self.normal_handle_key_event(phrase, event),
-            PhraseEditorMode::Insert => self.insert_handle_key_event(phrase, event),
+            PhraseEditorMode::Insert => self.insert_handle_key_event(event),
         }
     }
 

@@ -1,3 +1,5 @@
+use crate::phrase_edit_command::PhraseEditCommand;
+
 /// the result of handling input on a page
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum PageCommand<T> {
@@ -37,3 +39,20 @@ impl<T> PageCommand<T> {
     }
 
 }
+
+/// an app-level command
+#[derive(Debug, Clone)]
+pub enum AppCommand {
+    Project(ProjectCommand),
+    
+    /// a phrase-level command
+    Phrase{ phrase_id: u32, command: Box<PhraseEditCommand> },
+}
+
+/// a project-level command
+#[derive(Debug, Clone)]
+pub enum ProjectCommand {
+    /// sets the tempo in whole notes per second
+    SetTempo(f64),
+}
+

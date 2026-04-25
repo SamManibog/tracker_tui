@@ -2,7 +2,7 @@ use std::{collections::HashMap, io};
 
 use ratatui::{DefaultTerminal, Frame, crossterm::event::{self, Event, KeyEventKind}, layout::Rect, widgets::Widget};
 
-use crate::{Note, Phrase, PhraseEditor, PhraseEffect, PhraseTransitionMode, utils::PageCommand};
+use crate::{Note, Phrase, PhraseEditor, PhraseEditorCommand, PhraseEffect, PhraseTransitionMode, utils::PageCommand};
 
 /// the page this app is currently on
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,7 +84,12 @@ impl TuiTrackerApp {
                         if page_cmd.is_quit() {
                             self.exit = true;
                         } else if let PageCommand::Command(cmd) = page_cmd {
-                            cmd.execute(phrase);
+                            match cmd {
+                                PhraseEditorCommand::Edit(cmd) => {
+                                    cmd.execute(phrase);
+                                },
+                                PhraseEditorCommand::PlayPhrase => todo!("implement phrase loop playback")
+                            }
                         }
                     },
                 }
