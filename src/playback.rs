@@ -45,7 +45,7 @@ pub fn get_phrase_sample(
 
     // handle commands
     while let Some((time, _)) = cmd_buf.front() {
-        if *time <= whole_note {
+        if *time > whole_note {
             break;
         }
 
@@ -109,10 +109,12 @@ pub fn play_phrase(
             logical_whole_note,
             whole_note_delta
         );
+
         logical_whole_note += whole_note_delta;
         *left = sample;
         *right = sample;
-        if !keep_playing && index + 2 < len {
+
+        if !keep_playing && index + 2 > len {
             *whole_note += whole_note_delta * (index / 2 + 1) as f64;
             return Some(index + 2);
         }
@@ -128,6 +130,7 @@ pub struct PlaybackState {
     arrangent: Arc<Mutex<Arrangement>>,
     instruments: Arc<Mutex<HashMap<InstrumentId, Box<dyn Synthesizer>>>>,
     command_receiver: Receiver<PlaybackCommand>,
+    sample_rate: u32,
 }
 
 impl PlaybackState {
@@ -135,34 +138,59 @@ impl PlaybackState {
         arrangent: Arc<Mutex<Arrangement>>,
         instruments: Arc<Mutex<HashMap<InstrumentId, Box<dyn Synthesizer>>>>,
         command_receiver: Receiver<PlaybackCommand>,
+        sample_rate: u32,
     ) -> Self {
         Self {
             mode: PlaybackMode::Off,
             arrangent,
             instruments,
             command_receiver,
+            sample_rate,
+        }
+    }
+
+    fn end_current_mode(&mut self) {
+        type M = PlaybackMode;
+        match &self.mode {
+            M::LoopPhrase(phrase_state) => {
+                let mut instrument_lock = self.instruments.lock()
+                    .expect("cannot handle poisoned lock on instrument");
+
+                if let Some(instrument) = instrument_lock.get_mut(&phrase_state.instrument_id) {
+                    instrument.stop_all();
+                }
+            },
+            M::Off => (),
         }
     }
 
     fn handle_commands(&mut self) {
         while let Ok(cmd) = self.command_receiver.try_recv() {
             match cmd {
-                PlaybackCommand::StopPlayback => self.mode = PlaybackMode::Off,
-                PlaybackCommand::LoopPhrase { phrase_id, instrument_id, whole_note_delta } => {
+                PlaybackCommand::StopPlayback => {
+                    self.end_current_mode();
+                    self.mode = PlaybackMode::Off
+                },
+
+                PlaybackCommand::LoopPhrase { phrase_id, instrument_id, wholes_per_second } => {
+                    self.end_current_mode();
+
                     let arrangement_lock = self.arrangent.lock()
-                        .expect("cannot handdle poisoned lock on arrangent");
+                        .expect("cannot handle poisoned lock on arrangent");
+
                     if let Some(phrase) = arrangement_lock.get_phrase(phrase_id) {
                         self.mode = LoopPhraseState {
                             phrase_id,
                             phrase_buffer: new_command_buffer(phrase),
                             instrument_id,
-                            whole_note_delta,
+                            whole_note_delta: wholes_per_second / self.sample_rate as f64,
                             whole_note: 0.0,
                         }.into();
                     } else {
                         self.mode = PlaybackMode::Off;
                     }
                 }
+
             }
         }
     }
@@ -222,6 +250,16 @@ impl LoopPhraseState {
         if let Some(instrument) = instruments.get_mut(&self.instrument_id) {
             let mut range_start = 0;
 
+            if self.phrase_buffer.len() <= 0 {
+                self.whole_note = 0.0;
+                if let Some(phrase) = arrangent.get_phrase(self.phrase_id) {
+                    self.phrase_buffer = new_command_buffer(phrase);
+                } else {
+                    buffer[range_start..].fill(0.0);
+                    return;
+                }
+            }
+
             while let Some(index) = play_phrase(
                 &mut self.phrase_buffer,
                 instrument.as_mut(),
@@ -250,7 +288,11 @@ impl LoopPhraseState {
 
 pub enum PlaybackCommand {
     StopPlayback,
-    LoopPhrase{ phrase_id: PhraseId, instrument_id: InstrumentId, whole_note_delta: f64 }
+    LoopPhrase{ phrase_id: PhraseId, instrument_id: InstrumentId, wholes_per_second: f64 }
 }
 
-
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlaybackKind {
+    Off,
+    PhrasePlayback
+}

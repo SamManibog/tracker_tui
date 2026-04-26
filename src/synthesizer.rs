@@ -119,7 +119,7 @@ pub struct SynthesizerSpecification {
 }
 
 /// a synthesizer
-pub trait Synthesizer {
+pub trait Synthesizer: Send {
     /// update the syntheziser with the output stream state
     fn set_stream_state(&mut self, state: &OutputStreamState);
 

@@ -198,7 +198,7 @@ impl Synthesizer for PolyphonicOscSynth {
         self.stopping_oscillators.retain_mut(|(osc, declick)| {
             let mut oscillator_sample = osc.generate_sample(self.sample_rate);
 
-            *declick -= 1;
+            *declick = declick.saturating_sub(1);
             oscillator_sample *= *declick as f32 / self.declick_samples as f32;
 
             sample += oscillator_sample;

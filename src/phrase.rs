@@ -295,7 +295,8 @@ pub enum PhraseCommand {
 #[derive(Debug, Default)]
 pub struct VoicePlaybackState {
     /// the transition mode for the currently-playing note
-    pub current_transition_mode: PhraseTransitionMode,
+    /// none if no note is playing
+    pub current_transition_mode: Option<PhraseTransitionMode>,
 
     /// the transition mode for the next note to play
     pub next_transition_mode: PhraseTransitionMode,
@@ -319,6 +320,7 @@ pub struct PhraseCommandIterator<'a> {
     next: Vec<PhraseCommand>,
 
     /// the number of the next step
+    /// u32::MAX serves as a senteniel value meaning iteration should stop
     next_step: u32,
 
     /// the time that the next step occurs
@@ -329,9 +331,6 @@ pub struct PhraseCommandIterator<'a> {
 
     /// the duration of the phrase
     duration: u32,
-
-    /// if iteration is over
-    is_done: bool,
 }
 
 impl<'a> PhraseCommandIterator<'a> {
@@ -361,7 +360,6 @@ impl<'a> PhraseCommandIterator<'a> {
             next_time: 0.0,
             subdivisions: phrase.subdivisions,
             duration: phrase.duration,
-            is_done: false,
         };
         output.calculate_next();
         output
@@ -372,9 +370,12 @@ impl<'a> PhraseCommandIterator<'a> {
     fn calculate_next(&mut self) {
         debug_assert!(self.next.is_empty(), "next should be empty before calculate_next call");
 
-        type C = PhraseCommand;
+        // senteniel value exit
+        if self.next_step == u32::MAX {
+            return;
+        }
 
-        let prev_step = self.next_step;
+        type C = PhraseCommand;
 
         // calculate next_step field
         self.next_step = self.subdivisions;
@@ -385,11 +386,6 @@ impl<'a> PhraseCommandIterator<'a> {
             if let Some((time, _)) = voice_iter.peek() {
                 self.next_step = self.next_step.min(**time);
             }
-        }
-
-        // determine if iteration is over (signalled by next being empty)
-        if prev_step >= self.next_step {
-            return;
         }
 
         // calculate next_time in whole notes
@@ -430,13 +426,15 @@ impl<'a> PhraseCommandIterator<'a> {
                     let next_transition = self.voice_states[voice as usize].next_transition_mode;
 
                     // handle original transition mode: release
-                    if *current_transition == PhraseTransitionMode::Release {
+                    if let Some(PhraseTransitionMode::Release) = current_transition {
                     	self.next.push(C::StopNote { voice: voice });
+                    	self.next.push(C::StartNote { voice: voice, value: *note });
+                    } else if current_transition.is_none() {
                     	self.next.push(C::StartNote { voice: voice, value: *note });
                     }
 
                     // save the note's new transition
-                    *current_transition = next_transition;
+                    *current_transition = Some(next_transition);
 
                     // handle current lerp transition mode
                     if next_transition == PhraseTransitionMode::Lerp &&
@@ -460,6 +458,7 @@ impl<'a> PhraseCommandIterator<'a> {
 
         // if we iterated through all commands, end the phrase
         if self.next_step == self.subdivisions {
+            self.next_step = u32::MAX;
             self.next.push(C::EndPhrase);
         }
     }

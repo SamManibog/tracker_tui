@@ -6,6 +6,8 @@ use crate::{Phrase, PhraseEffect, phrase_edit_command::{PhraseClearEffects, Phra
 pub enum PhraseEditorCommand {
     Edit(PhraseEditCommand),
     PlayPhrase,
+    StopPhrase,
+    TogglePhrase,
 }
 
 /// the mode of the phrase editor
@@ -394,15 +396,16 @@ impl PhraseEditor {
                     // change modes
                     'i' => self.mode = PhraseEditorMode::Insert,
 
+                    // play
+                    ' ' => output = PageCommand::Command(PhraseEditorCommand::TogglePhrase),
+
                     // edit commands
-                    'x' => {
-                        output = PageCommand::Command(
-                            PhraseEditorCommand::Edit(PhraseClearEffects::new_cell(
-                                self.cell_pos.y.into(),
-                                self.cell_pos.x.into()
-                            ).into())
-                        );
-                    },
+                    'x' => output = PageCommand::Command(
+                        PhraseEditorCommand::Edit(PhraseClearEffects::new_cell(
+                            self.cell_pos.y.into(),
+                            self.cell_pos.x.into()
+                        ).into())
+                    ),
 
                     'q' => { output = PageCommand::Quit; },
 
