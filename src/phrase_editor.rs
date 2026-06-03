@@ -1,6 +1,6 @@
 use ratatui::{crossterm::event::{KeyCode, KeyEvent, KeyModifiers}, layout::{Position, Rect}, prelude::Color, style::Style, text::Text, widgets::{Clear, Widget}};
 
-use crate::{Phrase, PhraseEffect, phrase_edit_command::{PhraseClearEffects, PhraseEditCommand, PhraseSetEffect}, utils::PageCommand};
+use crate::{Note, Phrase, PhraseEffect, phrase_edit_command::{PhraseClearEffects, PhraseClearNotes, PhraseEditCommand, PhraseSetEffect, PhraseSetNote}, utils::PageCommand};
 
 #[derive(Debug, Clone)]
 pub enum PhraseEditorCommand {
@@ -57,14 +57,10 @@ impl Widget for PhraseWidget<'_> {
         *self.cell_rect = None;
 
         // clamp cell position
-        if self.cell_pos.x >= Phrase::FX_COLUMNS as u16{
-            if self.cell_pos.x as usize - Phrase::FX_COLUMNS >= self.phrase.voice_count() {
-                self.cell_pos.x = (Phrase::FX_COLUMNS + self.phrase.voice_count()) as u16 - 1;
-            }
-            if self.cell_pos.y >= self.phrase.subdivisions() as u16 {
-                self.cell_pos.y = self.phrase.subdivisions() as u16 - 1;
-            }
-        } else if self.cell_pos.y > self.phrase.subdivisions() as u16 {
+        if self.cell_pos.x as usize >= Phrase::FX_COLUMNS + Phrase::VOICE_COLUMNS {
+            self.cell_pos.x = (Phrase::FX_COLUMNS + Phrase::VOICE_COLUMNS) as u16 - 1;
+        }
+        if self.cell_pos.y > self.phrase.subdivisions() as u16 {
             self.cell_pos.y = self.phrase.subdivisions() as u16;
         }
 
@@ -80,14 +76,11 @@ impl Widget for PhraseWidget<'_> {
         let start_line_number = self.cam_pos.y;
 
         // the last line number (inclusive)
-        let end_fx_line_number = (start_line_number + area.height - 1)
+        let end_line_number = (start_line_number + area.height - 1)
             .min(self.phrase.subdivisions() as u16);
-        let end_note_line_number = (start_line_number + area.height - 1)
-            .min(self.phrase.subdivisions() as u16 - 1);
 
         // the number of characters needed for the line number
-        let fx_line_number_digits = (self.phrase.subdivisions()).ilog10() as u16 + 1;
-        let note_line_number_digits = (self.phrase.subdivisions() - 1).ilog10() as u16 + 1;
+        let line_number_digits = (self.phrase.subdivisions()).ilog10() as u16 + 1;
 
         // clamp camera x position to the correct bounds (must have 1+ visible column)
         {
@@ -95,7 +88,7 @@ impl Widget for PhraseWidget<'_> {
                 self.cell_pos.x * (Self::FX_WIDTH + 1)
             } else {
                 // midle section of line numbers
-                fx_line_number_digits + 1
+                line_number_digits + 1
 
                 // fx
                 + Phrase::FX_COLUMNS as u16 * (Self::FX_WIDTH + 1)
@@ -108,10 +101,7 @@ impl Widget for PhraseWidget<'_> {
                 Self::FX_WIDTH
             } else {
                 Self::NOTE_WIDTH
-            } + fx_line_number_digits + 1
-
-            // so we can show line numbers on right side
-            + note_line_number_digits + 1;
+            } + (line_number_digits + 1) * 2;
 
             self.cam_pos.x = self.cam_pos.x.clamp(
                 cell_max_x.saturating_sub(area.width),
@@ -121,24 +111,24 @@ impl Widget for PhraseWidget<'_> {
         let x_offset = self.cam_pos.x;
 
         // x_cursor must be greater than this in order to render fully
-        let x_threshold = x_offset + fx_line_number_digits + 1;
+        let x_threshold = x_offset + line_number_digits + 1;
 
         // stop drawing if x_cursor is greater than this
         let x_cutoff = area.x + area.width + x_offset;
 
         // render begining line numbers (camera-stable, no need threshold checking)
-        if area.width < fx_line_number_digits {
+        if area.width < line_number_digits {
             return;
         }
-        for i in start_line_number..=end_fx_line_number {
+        for i in start_line_number..=end_line_number {
             let number_text = Text::from(format!("{}", i))
                 .style(Style::new().fg(Self::LINE_NUMBER_COLOR))
                 .right_aligned();
-            number_text.render(Rect::new(area.x, i - start_line_number, fx_line_number_digits, 1), buf);
+            number_text.render(Rect::new(area.x, i - start_line_number, line_number_digits, 1), buf);
         }
 
         // the cursor to draw the current column of notes or effects
-        let mut cursor_x = area.x + fx_line_number_digits + 1;
+        let mut cursor_x = area.x + line_number_digits + 1;
 
         // render effects
         let empty_fx_text = Text::from("------")
@@ -149,7 +139,7 @@ impl Widget for PhraseWidget<'_> {
         }
         // iteration over effect_lists before columns has O(nlogn) time complexity
         // iteration over columns then effect lists has O(mnlogn) time complexity
-        for i in start_line_number..=end_fx_line_number {
+        for i in start_line_number..=end_line_number {
             let mut fx_cursor_x = cursor_x;
             let effect_list = self.phrase.effects().get_effect_list(i as u32).unwrap_or(empty_fx_list);
 
@@ -161,7 +151,7 @@ impl Widget for PhraseWidget<'_> {
                 // the number of cells we have to render in
                 if fx_cursor_x >= x_threshold {
                     let text = if let Some(effect) = effect_opt {
-                        &Text::from(format!("{}:ff", effect.abbreviate()))
+                        &Text::from(format!("{}      ", effect.abbreviate()))
                             .style(Style::new().fg(Self::FILLED_COLOR))
                     } else {
                         &empty_fx_text
@@ -183,32 +173,32 @@ impl Widget for PhraseWidget<'_> {
 
         // second line number
         cursor_x += (Self::FX_WIDTH + 1) * Phrase::FX_COLUMNS as u16;
-        if cursor_x + fx_line_number_digits > x_cutoff {
+        if cursor_x + line_number_digits > x_cutoff {
             return;
         }
         if cursor_x >= x_threshold {
-            for i in start_line_number..=end_fx_line_number {
+            for i in start_line_number..=end_line_number {
                 let number_text = Text::from(format!("{}", i))
                     .style(Style::new().fg(Self::LINE_NUMBER_COLOR))
                     .right_aligned();
                 number_text.render(Rect::new(
                     cursor_x - x_offset,
                     i - start_line_number,
-                    fx_line_number_digits, 1), buf);
+                    line_number_digits, 1), buf);
             }
         }
 
         // render voices
         let empty_note_text = Text::from("---")
             .style(Style::new().fg(Self::EMPTY_COLOR));
-        cursor_x += fx_line_number_digits + 1;
+        cursor_x += line_number_digits + 1;
         for (column, voice) in self.phrase.voices().iter().enumerate() {
             if cursor_x + Self::NOTE_WIDTH > x_cutoff {
                 return;
             }
 
             if cursor_x >= x_threshold {
-                for i in start_line_number..=end_note_line_number {
+                for i in start_line_number..=end_line_number {
                     let text = if let Some(note) = voice.get_note(i as u32) {
                         &Text::from(note.to_padded_string_sharps())
                             .style(Style::new().fg(Self::FILLED_COLOR))
@@ -230,19 +220,19 @@ impl Widget for PhraseWidget<'_> {
             cursor_x += Self::NOTE_WIDTH + 1;
         }
 
-        if cursor_x + note_line_number_digits > x_cutoff {
+        if cursor_x + line_number_digits > x_cutoff {
             return;
         }
 
         // render line numbers again
         // we do not need to check for x_threshold bounds because of camera positioning rules
-        for i in start_line_number..=end_note_line_number {
+        for i in start_line_number..=end_line_number {
             let number_text = Text::from(format!("{}", i))
                 .style(Style::new().fg(Self::LINE_NUMBER_COLOR));
             number_text.render(Rect::new(
                 cursor_x - x_offset,
                 i - start_line_number,
-                note_line_number_digits,
+                line_number_digits,
                 1), buf);
         }
 
@@ -318,11 +308,7 @@ impl PhraseEditor {
     }
 
     fn clamp_cursor_y(&mut self, phrase: &Phrase, y: u32) -> u16 {
-        if self.cell_pos.x < Phrase::FX_COLUMNS as u16 {
-            y.min(phrase.subdivisions()) as u16
-        } else {
-            y.min(phrase.subdivisions().saturating_sub(1)) as u16
-        }
+        y.min(phrase.subdivisions()) as u16
     }
 
     pub fn set_cursor_y(&mut self, phrase: &Phrase, row: u32) {
@@ -330,7 +316,7 @@ impl PhraseEditor {
     }
 
     /// attempts to move the cursor by the given offset in the x direction
-    fn move_cursor_x(&mut self, phrase: &Phrase, offset: i32) {
+    fn move_cursor_x(&mut self, offset: i32) {
         const OFFSET_MAX: i32 = (Phrase::FX_COLUMNS * Phrase::VOICE_COLUMNS) as i32;
         // determine real offset
         let x_offset = offset
@@ -344,20 +330,16 @@ impl PhraseEditor {
                 self.cell_pos.x.saturating_add(x_offset as u16)
             };
 
-        self.set_cursor_x(phrase, x as u32);
+        self.set_cursor_x(x as u32);
     }
 
-    fn clamp_cursor_x(&mut self, phrase: &Phrase, x: u32) -> u16 {
-        if self.cell_pos.y == phrase.subdivisions() as u16 {
-            x.min(Phrase::FX_COLUMNS as u32 - 1) as u16
-        } else {
-            x.min((Phrase::VOICE_COLUMNS + Phrase::FX_COLUMNS) as u32 - 1) as u16
-        }
+    fn clamp_cursor_x(&mut self, x: u32) -> u16 {
+        x.min((Phrase::VOICE_COLUMNS + Phrase::FX_COLUMNS) as u32 - 1) as u16
     }
 
     /// attempts to set the cursor to the given x value
-    pub fn set_cursor_x(&mut self, phrase: &Phrase, column: u32) {
-        self.cell_pos.x = self.clamp_cursor_x(phrase, column);
+    pub fn set_cursor_x(&mut self, column: u32) {
+        self.cell_pos.x = self.clamp_cursor_x(column);
     }
 
     /// handle an event in normal mode
@@ -384,14 +366,20 @@ impl PhraseEditor {
                 // handle everything else
                 match character {
                     // relative movement
-                    'h' => self.move_cursor_x(&phrase, -1),
-                    'l' => self.move_cursor_x(&phrase, 1),
+                    'h' => self.move_cursor_x(-1),
+                    'l' => self.move_cursor_x(1),
                     'k' => self.move_cursor_y(&phrase, -1),
                     'j' => self.move_cursor_y(&phrase, 1),
 
                     // absolute movement
-                    'c' => self.set_cursor_x(&phrase, self.number_control),
+                    'c' => self.set_cursor_x(self.number_control),
                     'r' => self.set_cursor_y(&phrase, self.number_control),
+
+                    // switch between note and fx column
+                    'w' => self.set_cursor_x(
+                        (self.cell_pos.x as u32 + Phrase::FX_COLUMNS as u32)
+                        % (Phrase::FX_COLUMNS + Phrase::VOICE_COLUMNS) as u32
+                    ),
 
                     // change modes
                     'i' => self.mode = PhraseEditorMode::Insert,
@@ -401,10 +389,17 @@ impl PhraseEditor {
 
                     // edit commands
                     'x' => output = PageCommand::Command(
-                        PhraseEditorCommand::Edit(PhraseClearEffects::new_cell(
-                            self.cell_pos.y.into(),
-                            self.cell_pos.x.into()
-                        ).into())
+                        if (self.cell_pos.x as usize) < Phrase::FX_COLUMNS {
+                            PhraseEditorCommand::Edit(PhraseClearEffects::new_cell(
+                                self.cell_pos.y.into(),
+                                self.cell_pos.x.into()
+                            ).into())
+                        } else {
+                            PhraseEditorCommand::Edit(PhraseClearNotes::new_cell(
+                                self.cell_pos.y.into(),
+                                self.cell_pos.x.into()
+                            ).into())
+                        }
                     ),
 
                     'q' => { output = PageCommand::Quit; },
@@ -413,8 +408,8 @@ impl PhraseEditor {
                 }
             }
 
-            C::Left => self.move_cursor_x(&phrase, -1),
-            C::Right => self.move_cursor_x(&phrase, 1),
+            C::Left => self.move_cursor_x(-1),
+            C::Right => self.move_cursor_x(1),
             C::Up => self.move_cursor_y(&phrase, -1),
             C::Down => self.move_cursor_y(&phrase, 1),
 
@@ -431,16 +426,16 @@ impl PhraseEditor {
         event: KeyEvent
     ) -> PageCommand<PhraseEditorCommand> {
         // handle regular typing
-        if event.modifiers == KeyModifiers::empty() {
-            match event.code {
-                KeyCode::Char(char) => {
-                    if char.is_ascii_graphic() {
-                        self.text.push(char);
-                    }
-                },
+        match (event.code, event.modifiers.is_empty()) {
+            (KeyCode::Char(char), _) => {
+                if char.is_ascii_graphic() {
+                    self.text.push(char);
+                }
+            },
 
-                KeyCode::Enter => {
-                    self.mode = PhraseEditorMode::Normal;
+            (KeyCode::Enter, true) => {
+                self.mode = PhraseEditorMode::Normal;
+                if self.cell_pos.x < Phrase::FX_COLUMNS as u16 {
                     if self.text.is_empty() {
                         return PageCommand::Command(
                             PhraseEditorCommand::Edit(PhraseClearEffects::new_cell(
@@ -457,18 +452,36 @@ impl PhraseEditor {
                             ).into())
                         );
                     }
-                },
+                } else {
+                    if self.text.is_empty() {
+                        return PageCommand::Command(
+                            PhraseEditorCommand::Edit(PhraseClearNotes::new_cell(
+                                self.cell_pos.y.into(),
+                                self.cell_pos.x.into()
+                            ).into())
+                        );
+                    } else if let Some(note) = Note::parse_three_character(&self.text) {
+                        return PageCommand::Command(
+                            PhraseEditorCommand::Edit(PhraseSetNote::new(
+                                note,
+                                self.cell_pos.y.into(),
+                                self.cell_pos.x.into()
+                            ).into())
+                        );
+                    }
 
-                KeyCode::Backspace => {
-                    self.text.pop();
-                },
+                }
+            },
 
-                _ => {}
-            }
+            (KeyCode::Backspace, _) => {
+                self.text.pop();
+            },
+
+            _ => {}
         }
 
         // handle exit to normal mode
-        else if event.modifiers == KeyModifiers::CONTROL && let KeyCode::Char('c') = event.code {
+        if event.modifiers == KeyModifiers::CONTROL && let KeyCode::Char('c') = event.code {
             self.mode = PhraseEditorMode::Normal;
         }
 
@@ -495,7 +508,7 @@ impl PhraseEditor {
         focused: bool,
         area: Rect,
         buf: &mut ratatui::prelude::Buffer
-    ) -> Text {
+    ) -> Text<'_> {
         // render the phrase
         let mut cell_rect = None;
         PhraseWidget {

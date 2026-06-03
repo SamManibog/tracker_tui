@@ -3,17 +3,21 @@ use std::{collections::HashMap, io, str::FromStr, sync::{Arc, Mutex, mpsc::{self
 use cpal::{Stream, StreamConfig, traits::{DeviceTrait, HostTrait, StreamTrait}};
 use ratatui::{DefaultTerminal, Frame, crossterm::event::{self, Event, KeyEvent, KeyEventKind}, layout::Rect, widgets::Widget};
 
-use crate::{Note, Phrase, PhraseEditor, PhraseEditorCommand, Synthesizer, arrangement::{Arrangement, InstrumentId, PhraseId}, osc_synths::PolyphonicOscSynth, playback::{PlaybackCommand, PlaybackKind, PlaybackState}, utils::PageCommand};
+use crate::{InstrumentOverview, Note, Phrase, PhraseEditor, PhraseEditorCommand, PhraseTransitionMode, Synthesizer, SynthesizerSpecification, arrangement::{Arrangement, InstrumentId, PhraseId}, osc_synths::PolyphonicOscSynth, playback::{PlaybackCommand, PlaybackKind, PlaybackState}, utils::PageCommand};
 
 /// the page this app is currently on
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AppPage {
-    Phrase
+    Phrase,
+    InstrumentOverview,
 }
 
 pub struct TuiTrackerApp {
     /// the arrangement data
     arrangement: Arc<Mutex<Arrangement>>,
+
+    /// the list of allowed instruments
+    allowed_instruments: Vec<SynthesizerSpecification>,
 
     /// the instruments
     instruments: Arc<Mutex<HashMap<InstrumentId, Box<dyn Synthesizer>>>>,
@@ -26,6 +30,9 @@ pub struct TuiTrackerApp {
 
     /// the editor for the current phrase
     phrase_editor: PhraseEditor,
+
+    /// the instrument overview
+    instrument_overview: InstrumentOverview,
 
     /// the current phrase
     current_phrase: PhraseId,
@@ -41,6 +48,7 @@ pub struct TuiTrackerApp {
 
     /// whether the app should exit
     exit: bool,
+
 }
 
 impl TuiTrackerApp {
@@ -48,22 +56,31 @@ impl TuiTrackerApp {
 
     /// create a new instance of the app
     /// note: this is currently a test function
-    pub fn new() -> Self {
-        let mut phrase = Box::new(Phrase::new(16, 16));
-        phrase.set_note(0, 0, Some(Note::from_str("C4").unwrap()));
-        phrase.set_note(4, 0, Some(Note::from_str("D4").unwrap()));
-        phrase.set_note(8, 0, Some(Note::from_str("E4").unwrap()));
-        phrase.set_note(12, 0, Some(Note::from_str("F4").unwrap()));
+    pub fn new(allowed_instruments: Vec<SynthesizerSpecification>) -> Self {
+        let mut phrase = Box::new(Phrase::new(64, 6));
+        for col in 0..Phrase::FX_COLUMNS {
+            phrase.set_effect(0, col, Some(crate::PhraseEffect::SetTransition(PhraseTransitionMode::Lerp)));
+        }
 
-        phrase.set_note(0, 1, Some(Note::from_str("G4").unwrap()));
-        phrase.set_note(4, 1, Some(Note::from_str("A4").unwrap()));
-        phrase.set_note(8, 1, Some(Note::from_str("B4").unwrap()));
-        phrase.set_note(12, 1, Some(Note::from_str("C5").unwrap()));
+        phrase.set_note(0, 0, Some(Note::from_str("G3").unwrap()));
+        phrase.set_note(2, 0, Some(Note::from_str("G3").unwrap()));
+        phrase.set_note(4, 0, Some(Note::from_str("C3").unwrap()));
+
+        phrase.set_note(0, 1, Some(Note::from_str("D4").unwrap()));
+        phrase.set_note(2, 1, Some(Note::from_str("D4").unwrap()));
+        phrase.set_note(4, 1, Some(Note::from_str("E4").unwrap()));
+
+        phrase.set_note(0, 2, Some(Note::from_str("F4").unwrap()));
+        phrase.set_note(2, 2, Some(Note::from_str("F4").unwrap()));
+        phrase.set_note(4, 2, Some(Note::from_str("G4").unwrap()));
+
+        phrase.set_note(0, 3, Some(Note::from_str("B4").unwrap()));
+
 
         let instruments = HashMap::from([
             (
                 InstrumentId(0),
-                (PolyphonicOscSynth::sine_specification().generate_synth)()
+                (PolyphonicOscSynth::square_specification().generate_synth)(48000)
             )
         ]);
         let instruments = Arc::new(Mutex::new(instruments));
@@ -75,13 +92,15 @@ impl TuiTrackerApp {
         let (playback_sender, stream) = Self::init_playback(arrangement.clone(), instruments.clone());
 
         Self {
+            allowed_instruments,
             stream_opt: Some(stream),
             playback_sender,
             instruments,
             arrangement,
             playback_kind: PlaybackKind::Off,
-            page: AppPage::Phrase,
+            page: AppPage::InstrumentOverview,
             phrase_editor: PhraseEditor::new(),
+            instrument_overview: InstrumentOverview::new(),
             current_phrase: PhraseId(0),
             current_instrument: InstrumentId(0),
             exit: false,
@@ -93,6 +112,7 @@ impl TuiTrackerApp {
         arrangent: Arc<Mutex<Arrangement>>,
         instruments: Arc<Mutex<HashMap<InstrumentId, Box<dyn Synthesizer>>>>,
     ) -> (Sender<PlaybackCommand>, Stream) {
+        // let host = cpal::host_from_id(cpal::HostId::Asio).expect("ASIO not installed :(");
         let host = cpal::default_host();
         let device = host.default_output_device().expect("no output device available");
         let mut supported_configs_range = device.supported_output_configs()
@@ -100,11 +120,24 @@ impl TuiTrackerApp {
 
         let sample_rate = 48000;
         let supported_config = supported_configs_range
+            //.filter(|config| config.sample_format() == SampleFormat::I32)
             .find(|config| config.try_with_sample_rate(sample_rate).is_some())
             .expect("no supported config?!")
             .with_sample_rate(sample_rate);
-        let mut config: StreamConfig = supported_config.into();
-        config.buffer_size = cpal::BufferSize::Fixed(sample_rate * 1 / 1000);
+
+        // let supported_config = device.default_output_config().expect("could not get default config");
+
+        let config: StreamConfig = supported_config.into();
+        
+        let sample_rate = config.sample_rate;
+
+        // update instruments to correct sample rate
+        {
+            let mut instrument_lock = instruments.lock().expect("cannot handle poisoned lock");
+            for instrument in instrument_lock.values_mut() {
+                instrument.set_stream_state(&crate::OutputStreamState { sample_rate });
+            }
+        }
 
         let (sender, receiver) = mpsc::channel();
 
@@ -120,8 +153,8 @@ impl TuiTrackerApp {
             move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
                 playback_state.play(data);
             },
-            move |_err| {
-                println!("ERROR BRUH")
+            move |err| {
+                eprintln!("ERROR BRUH: {}", err)
             },
             None // None=blocking, Some(Duration)=timeout
         ).expect("Could not build stream.");
@@ -208,6 +241,7 @@ impl TuiTrackerApp {
         Event::Key(key_event) if key_event.kind == KeyEventKind::Press => {
             match self.page {
                 AppPage::Phrase => self.phrase_handle_key_event(key_event),
+                AppPage::InstrumentOverview => (),
             }
         }
         _ => {}
@@ -247,6 +281,9 @@ impl Widget for &mut TuiTrackerApp {
             height: 1
         };
 
+        #[allow(unused_assignments)]
+        let mut status_line_text = None;
+
         match self.page {
             AppPage::Phrase => {
                 let arrangement_lock = self.arrangement.lock()
@@ -254,8 +291,21 @@ impl Widget for &mut TuiTrackerApp {
 
                 let phrase = arrangement_lock.get_phrase(self.current_phrase)
                     .expect("render should be called after phrase is valid");
-                self.phrase_editor.render(phrase, true, page_area, buf);
-            }
+
+                status_line_text = Some(self.phrase_editor.render(phrase, true, page_area, buf));
+
+            },
+            AppPage::InstrumentOverview => {
+                let instrument_lock = self.instruments.lock()
+                    .expect("cannot handle poisoned lock");
+
+                self.instrument_overview.render(&instrument_lock, true, page_area, buf);
+
+            },
+        }
+
+        if let Some(text) = status_line_text {
+            text.render(status_line_area, buf);
         }
     }
 

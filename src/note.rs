@@ -1,5 +1,11 @@
 use std::str::FromStr;
 
+/// gets the frequency of a note based on a delta_freq
+/// delta_freq is the difference in cents of the note from A4
+pub fn frequency_from_delta_freq(delta_freq: f32) -> f32 {
+    440.0 * 2f32.powf(delta_freq / 1200f32)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct NoteId(u32);
 
@@ -80,6 +86,51 @@ impl Note {
     /// gets the frequency of the note in 12-tone equal temperment
     pub fn frequency(&self, a4_frequency: f64) -> f64 {
         a4_frequency * 2f64.powf(self.0 as f64 / 1200f64)
+    }
+
+    /// attempts to parse the note from a two-to-three-character string
+    /// if the given string is more than three characters long, those characters are ignored
+    pub fn parse_three_character(string: &str) -> Option<Self> {
+        let mut iter1 = string.chars();
+        let mut iter2 = string.chars();
+
+        let (c1, c2, c3) = if let (Some(c1), Some(c2), Some(c3)) = (iter1.next(), iter1.next(), iter1.next()) {
+            (c1, c2, c3)
+        } else if let (Some(c1), Some(c3)) = (iter2.next(), iter2.next()) {
+            (c1, '-', c3)
+        } else {
+            return None
+        };
+
+        let tone = match c1.to_ascii_lowercase() {
+            'c' => 0,
+            'd' => 2,
+            'e' => 4,
+            'f' => 5,
+            'g' => 7,
+            'a' => 9,
+            'b' => 11,
+            _ => return None,
+        } - 9;
+        let accidental: i32 = match c2 {
+            'b' => -1,
+            '_' => 0,
+            '-' => 0,
+            ' ' => 0,
+            '#' => 1,
+            _ => return None,
+        };
+        let octave = c3.to_digit(10)? as i32 - 4;
+
+        let note = Self::from_semitone_delta_a4(tone + accidental + octave * 12);
+
+        if note < Self::C0 {
+            Some(Self::C0)
+        } else if note > Self::B9 {
+            Some(Self::B9)
+        } else {
+            Some(note)
+        }
     }
 
     /// gets the difference in cents from the nearest semitone (C, C#, D, ...)

@@ -23,6 +23,9 @@ pub mod phrase_edit_command;
 pub mod phrase_editor;
 pub use phrase_editor::*;
 
+pub mod instrument_overview;
+pub use instrument_overview::*;
+
 // pub mod pattern_player;
 // pub use pattern_player::*;
 
@@ -32,5 +35,7 @@ pub mod app;
 pub use app::*;
 
 pub mod arrangement;
+
+pub mod shift_grid;
 
 mod utils;

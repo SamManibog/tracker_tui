@@ -1,6 +1,8 @@
-use std::{collections::{BTreeMap, HashMap, btree_map}, fmt::Display, iter::Peekable, ops::Bound, str::FromStr, u32};
+use std::{collections::{BTreeMap, VecDeque, btree_map}, fmt::Display, iter::Peekable, str::FromStr, u32};
 
 use crate::Note;
+
+pub type PhraseCommandBuffer = VecDeque<(f64, Vec<PhraseCommand>)>;
 
 /// a vector of voice units, sorted by time
 /// voice units cannot occupy the same timeslot
@@ -74,16 +76,26 @@ pub enum PhraseEffect {
     /// set the transition type for all notes created while active
     SetTransition(PhraseTransitionMode),
 
+    /// detune the next note by the given amount in cents
+    Detune(i32),
+
     /// stop all voices
     Silence
 }
 
 impl PhraseEffect {
     /// returns the 3-character abbreviation of the effect
-    pub fn abbreviate(&self) -> &str {
+    pub fn abbreviate(&self) -> String {
         match self {
-            Self::SetTransition(transition) => transition.abbreviate(),
-            Self::Silence => 	"shh",
+            Self::SetTransition(transition) => transition.abbreviate().to_string(),
+            Self::Silence => 	"shh".to_string(),
+            Self::Detune(cents) => {
+                let center = 0x80;
+                format!(
+                    "dtn:{:02X}",
+                    center + cents
+                )
+            },
         }
     }
 }
@@ -94,6 +106,11 @@ impl Display for PhraseEffect {
             PhraseEffect::SetTransition(transition) => transition.to_string(),
 
             PhraseEffect::Silence => "Silence".to_string(),
+
+            PhraseEffect::Detune(cents) => format!(
+                "Detune {} ¢",
+                cents
+            ),
         };
 
         write!(f, "{}", text)
@@ -104,17 +121,35 @@ impl FromStr for PhraseEffect {
     type Err = ();
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let map = HashMap::from([
-            ("rel", PhraseEffect::SetTransition(PhraseTransitionMode::Release)),
-            ("lrp", PhraseEffect::SetTransition(PhraseTransitionMode::Lerp)),
-            ("shh", PhraseEffect::Silence),
-        ]);
+        if s.len() == 6 {
+            let s_ascii = s.as_bytes();
+            if s_ascii[3] == ':' as u8 {
+                if s_ascii[4].is_ascii_hexdigit() && s_ascii[5].is_ascii_hexdigit() {
+                    let digit1 = (s_ascii[4] as char).to_digit(16).unwrap() as u8;
+                    let digit2 = (s_ascii[5] as char).to_digit(16).unwrap() as u8;
 
-        if let Some(item) = map.get(s) {
-            Ok(*item)
-        } else {
-            Err(())
+                    let out = match &s[0..3] {
+                        "dtn" => PhraseEffect::Detune(digit1 as i32 * 16 + digit2 as i32 - 0x80),
+                        _ => return Err(()),
+                    };
+
+                    return Ok(out);
+
+                } else {
+                    return Err(());
+                }
+            }
         }
+
+        let out = match s {
+            "rel" => PhraseEffect::SetTransition(PhraseTransitionMode::Release),
+            "lrp" => PhraseEffect::SetTransition(PhraseTransitionMode::Lerp),
+            "shh" => PhraseEffect::Silence,
+            "dtn" => PhraseEffect::Detune(0),
+            _ => return Err(()),
+        };
+
+        return Ok(out);
     }
 }
 
@@ -185,7 +220,7 @@ impl Phrase {
     pub const MAX_SUBDIVISION_MULTIPLIER: u32 = 1;
     
     /// the number of voices in a phrase
-    pub const VOICE_COLUMNS: usize = 16;
+    pub const VOICE_COLUMNS: usize = 8;
 
     /// the maximum number of fx columns in a phrase
     pub const FX_COLUMNS: usize = 8;
@@ -261,7 +296,7 @@ impl Phrase {
 
             // using < because we only want as many time steps for
             // notes as there are subdivisions
-            if time_step < self.subdivisions {
+            if time_step <= self.subdivisions {
                 voice.set_note(time_step, note_opt)
             } else {
                 None
@@ -269,6 +304,10 @@ impl Phrase {
         } else {
             None
         }
+    }
+
+    pub fn buffer(&self) -> PhraseCommandBuffer {
+        PhraseCommandIterator::from_phrase(self).collect()
     }
 
 }
@@ -300,20 +339,23 @@ pub struct VoicePlaybackState {
 
     /// the transition mode for the next note to play
     pub next_transition_mode: PhraseTransitionMode,
+
+    /// the detune of the next note in cents
+    pub detune_cents: i32,
 }
 
 /// an iterator over the PhraseOutputCommands in a phrase
 /// if storing this, it is recommended to keep this in a box; its quite large
 #[derive(Debug)]
-pub struct PhraseCommandIterator<'a> {
+struct PhraseCommandIterator<'a> {
     /// the a vector of (original transition when creating previous note, iterator over notes)
-    voice_iters: Vec<Peekable<btree_map::Range<'a, u32, Note>>>,
+    voice_iters: Vec<Peekable<btree_map::Iter<'a, u32, Note>>>,
 
     /// the states of each voice
     voice_states: Box<[VoicePlaybackState; Phrase::VOICE_COLUMNS]>,
     
     /// an iterator over the effects on each step
-    fx_iter: Peekable<btree_map::Range<'a, u32, Box<[Option<PhraseEffect>; Phrase::FX_COLUMNS]>>>,
+    fx_iter: Peekable<btree_map::Iter<'a, u32, Box<[Option<PhraseEffect>; Phrase::FX_COLUMNS]>>>,
 
     /// the next output of the iterator
     /// if empty, the iterator should return none
@@ -336,19 +378,14 @@ pub struct PhraseCommandIterator<'a> {
 impl<'a> PhraseCommandIterator<'a> {
     /// creates a new command iterator over all commands in a phrase
     pub fn from_phrase(phrase: &'a Phrase) -> Self {
-        Self::from_time_step(phrase, 0)
-    }
-
-    /// creates a new command iterator that will process commands at and beyond the given timestep
-    pub fn from_time_step(phrase: &'a Phrase, time_step: u32) -> Self {
         let mut voice_iters = Vec::new();
         for voice in phrase.voices.iter() {
             voice_iters.push(
-                voice.0.range((Bound::Included(time_step), Bound::Unbounded))
+                voice.0.iter()
                     .peekable()
             );
         }
-        let fx_iter = phrase.effects.0.range((Bound::Included(time_step), Bound::Unbounded))
+        let fx_iter = phrase.effects.0.iter()
             .peekable();
 
         let mut output = Self {
@@ -408,6 +445,9 @@ impl<'a> PhraseCommandIterator<'a> {
                             E::SetTransition(transition) => {
                                 self.voice_states[voice].next_transition_mode = *transition;
                             }
+                            E::Detune(cents) => {
+                                self.voice_states[voice].detune_cents = *cents;
+                            },
                         };
                     }
                 }
@@ -417,60 +457,62 @@ impl<'a> PhraseCommandIterator<'a> {
 
         // handle voices
         let mut voice: u8 = 0;
-        for voice_iter in &mut self.voice_iters {
-            if let Some((time, _)) = voice_iter.peek() {
-                if **time == self.next_step {
+        if self.next_step != self.subdivisions {
+            for voice_iter in &mut self.voice_iters {
+                if let Some((time, _)) = voice_iter.peek() {
+                    if **time == self.next_step {
 
-                    let (time, note) = voice_iter.next().unwrap();
-                    let current_transition = &mut self.voice_states[voice as usize].current_transition_mode;
-                    let next_transition = self.voice_states[voice as usize].next_transition_mode;
+                        let (time, note) = voice_iter.next().unwrap();
+                        let current_transition = &mut self.voice_states[voice as usize].current_transition_mode;
+                        let next_transition = self.voice_states[voice as usize].next_transition_mode;
+                        let note = note.add_cents(std::mem::take(
+                            &mut self.voice_states[voice as usize].detune_cents
+                        ));
 
-                    // handle original transition mode: release
-                    if let Some(PhraseTransitionMode::Release) = current_transition {
-                    	self.next.push(C::StopNote { voice: voice });
-                    	self.next.push(C::StartNote { voice: voice, value: *note });
-                    } else if current_transition.is_none() {
-                    	self.next.push(C::StartNote { voice: voice, value: *note });
-                    }
+                        // handle original transition mode: release
+                        if let Some(PhraseTransitionMode::Release) = current_transition {
+                            self.next.push(C::StopNote { voice: voice });
+                            self.next.push(C::StartNote { voice: voice, value: note });
+                        } else if current_transition.is_none() {
+                            self.next.push(C::StartNote { voice: voice, value: note });
+                        }
 
-                    // save the note's new transition
-                    *current_transition = Some(next_transition);
+                        // save the note's new transition
+                        *current_transition = Some(next_transition);
 
-                    // handle current lerp transition mode
-                    if next_transition == PhraseTransitionMode::Lerp &&
-                    	let Some((next_time, next_note)) = voice_iter.peek() {
+                        // handle current lerp transition mode
+                        if next_transition == PhraseTransitionMode::Lerp &&
+                        let Some((next_time, next_note)) = voice_iter.peek() {
 
-                        // the duration of the transition in ticks
-                        let duration_ticks = **next_time - time;
-                        let duration = (duration_ticks * self.duration) as f64
-                        / self.subdivisions as f64 / Phrase::TICKS_PER_WHOLE_NOTE as f64;
+                            // the duration of the transition whole notes
+                            let duration_ticks = **next_time - time;
+                            let duration = (duration_ticks * self.duration) as f64
+                            / self.subdivisions as f64 / Phrase::TICKS_PER_WHOLE_NOTE as f64;
 
-                        self.next.push(C::LerpNote {
-                            voice,
-                            duration,
-                            end: **next_note, 
-                        })
+                            self.next.push(C::LerpNote {
+                                voice,
+                                duration,
+                                end: **next_note, 
+                            })
+                        }
+
                     }
                 }
+                voice += 1;
             }
-            voice += 1;
         }
 
         // if we iterated through all commands, end the phrase
         if self.next_step == self.subdivisions {
             self.next_step = u32::MAX;
             self.next.push(C::EndPhrase);
+        } else if self.next.is_empty() {
+            // recalculate if empty (some rare circumstances can lead to this, but we don't want to
+            // prematurely end; note that amortized iteration time is still O(n))
+            self.calculate_next();
         }
     }
 
-    /// peeks the next item without iterating
-    pub fn peek(&self) -> Option<(f64, &Vec<PhraseCommand>)> {
-        if self.next.is_empty() {
-            return None;
-        }
-
-        Some((self.next_time, &self.next))
-    }
 }
 
 impl<'a> Iterator for PhraseCommandIterator<'a> {
@@ -490,3 +532,4 @@ impl<'a> Iterator for PhraseCommandIterator<'a> {
         }
     }
 }
+

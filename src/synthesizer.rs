@@ -114,7 +114,8 @@ impl SynthParamSpecification {
 /// the specification for a synthesizer
 pub struct SynthesizerSpecification {
     pub name: String,
-    pub generate_synth: Box<dyn Fn() -> Box<dyn Synthesizer> + Send>,
+    pub short_name: String,
+    pub generate_synth: Box<dyn Fn(u32) -> Box<dyn Synthesizer> + Send>,
     pub parameters: HashMap<SynthParamId, SynthParamSpecification>,
 }
 
@@ -129,14 +130,15 @@ pub trait Synthesizer: Send {
     /// tell the synthesizer to set a parameter to a specific value
     fn set_parameter(&mut self, param_id: SynthParamId, value: f64);
 
-    /// tell the syntheziser to begin playing a frequency
-    fn start_playing_note(&mut self, note_id: NoteId, freq: f64);
+    /// tell the syntheziser to begin playing a frequency as a cent delta from a4
+    fn start_playing_note(&mut self, note_id: NoteId, delta_freq: f64);
 
-    /// set the frequency of the given note
-    fn set_note_frequency(&mut self, note_id: NoteId, freq: f64);
+    /// set the frequency of a note as the cent delta from a4
+    fn set_note_frequency(&mut self, note_id: NoteId, delta_freq: f64);
 
     /// the given note the the frequency over the given duration in whole notes
-    fn lerp_note(&mut self, note_id: NoteId, freq: f64, duration: f64);
+    /// frequency is given as the cent delta from a4
+    fn lerp_note(&mut self, note_id: NoteId, delta_freq: f64, duration: f64);
 
     /// tell the synthesizer to stop playing a note.
     /// immediately after this is called, the note id it was called for must

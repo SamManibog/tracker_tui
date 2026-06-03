@@ -4,10 +4,14 @@ use crate::Phrase;
 
 /// the id of an instrument
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct InstrumentId(pub u32);
+pub struct InstrumentId(pub u8);
 
-impl From<u32> for InstrumentId {
-    fn from(value: u32) -> Self {
+impl InstrumentId {
+    pub const MAX_INSTRUMENTS: usize = 256;
+}
+
+impl From<u8> for InstrumentId {
+    fn from(value: u8) -> Self {
         Self(value)
     }
 }

@@ -1,6 +1,42 @@
-use std::{collections::{HashMap, VecDeque}, sync::{Arc, Mutex, mpsc::Receiver}};
+use std::{
+    collections::HashMap,
+    marker::PhantomData,
+    sync::{Arc, Mutex, mpsc::Receiver},
+};
 
-use crate::{NoteId, Phrase, PhraseCommand, PhraseCommandIterator, Synthesizer, arrangement::{Arrangement, InstrumentId, PhraseId}};
+use crate::{
+    NoteId, PhraseCommand, PhraseCommandBuffer, Synthesizer, arrangement::{Arrangement, InstrumentId, PhraseId}
+};
+
+pub trait SampleTrait: Clone {
+    const MIDDLE: Self;
+
+    fn from_f32(val: f32) -> Self;
+}
+
+impl SampleTrait for f32 {
+    const MIDDLE: Self = 0.0;
+
+    fn from_f32(val: f32) -> Self {
+        val
+    }
+}
+
+impl SampleTrait for i32 {
+    const MIDDLE: Self = 0;
+
+    fn from_f32(val: f32) -> Self {
+        (val.clamp(-1.0, 1.0) * i32::MAX as f32).round() as i32
+    }
+}
+
+impl SampleTrait for u32 {
+    const MIDDLE: Self = u32::MAX / 2;
+
+    fn from_f32(val: f32) -> Self {
+        (((val.clamp(-1.0, 1.0) + 1.0) * 0.5) * u32::MAX as f32).round() as u32
+    }
+}
 
 /// global playback data
 #[derive(Debug)]
@@ -17,14 +53,6 @@ pub struct TrackPlaybackState {
     pub phrase_whole_note: f64,
 }
 
-/// a buffer of phrase commands, derived from a phrase
-pub type PhraseCommandBuffer = VecDeque<(f64, Vec<PhraseCommand>)>;
-
-/// constructs a new phrase command buffer from a phrase
-pub fn new_command_buffer(phrase: &Phrase) -> PhraseCommandBuffer {
-    PhraseCommandIterator::from_phrase(phrase).collect()
-}
-
 /// gets a sample based on a phrase command buffer
 /// `cmd_buf` is the command buffer of the phrase
 /// `synth` is the synthesizer to play the phrase on
@@ -36,13 +64,7 @@ pub fn get_phrase_sample(
     synth: &mut dyn Synthesizer,
     whole_note: f64,
     whole_note_delta: f64,
-) -> (f32, bool) {
-    if cmd_buf.is_empty() {
-        return (0.0, false);
-    }
-
-    let mut keep_playing = true;
-
+) -> f32 {
     // handle commands
     while let Some((time, _)) = cmd_buf.front() {
         if *time > whole_note {
@@ -57,14 +79,18 @@ pub fn get_phrase_sample(
                 C::StartNote { voice, value } => {
                     synth.start_playing_note(
                         NoteId::from(*voice as u32),
-                        value.frequency(440.0)
+                        value.cent_delta_a4() as f64,
                     );
-                },
-                C::LerpNote { voice, duration, end } => {
+                }
+                C::LerpNote {
+                    voice,
+                    duration,
+                    end,
+                } => {
                     synth.lerp_note(
                         NoteId::from(*voice as u32),
-                        end.frequency(440.0),
-                        *duration
+                        end.cent_delta_a4() as f64,
+                        *duration,
                     );
                 }
                 C::StopNote { voice } => {
@@ -75,7 +101,6 @@ pub fn get_phrase_sample(
                 }
                 C::EndPhrase => {
                     synth.stop_all();
-                    keep_playing = false;
                     break;
                 }
             }
@@ -83,19 +108,18 @@ pub fn get_phrase_sample(
     }
 
     // generate sample
-    (synth.generate_sample(whole_note_delta), keep_playing)
+    synth.generate_sample(whole_note_delta)
 }
 
 /// Plays a phrase, writing samples to the given buffer.
 /// If the phrase commands are exhausted before the buffer is filled, returns Some(index)
 /// where index is the index of the first unmodified sample.
-/// If the buffer is exhausted before the phrase ends, returns None.
-pub fn play_phrase(
+pub fn play_phrase<T: SampleTrait>(
     phrase_buffer: &mut PhraseCommandBuffer,
     synth: &mut dyn Synthesizer,
     whole_note: &mut f64,
     whole_note_delta: f64,
-    buffer: &mut [f32]
+    buffer: &mut [T],
 ) -> Option<usize> {
     let len = buffer.len();
     let mut buffer_iter = buffer.iter_mut().enumerate();
@@ -103,18 +127,14 @@ pub fn play_phrase(
     let mut logical_whole_note = *whole_note;
 
     while let (Some((index, left)), Some((_, right))) = (buffer_iter.next(), buffer_iter.next()) {
-        let (sample, keep_playing) = get_phrase_sample(
-            phrase_buffer,
-            synth,
-            logical_whole_note,
-            whole_note_delta
-        );
+        let sample = get_phrase_sample(phrase_buffer, synth, logical_whole_note, whole_note_delta);
+        let sample = T::from_f32(sample);
 
         logical_whole_note += whole_note_delta;
-        *left = sample;
+        *left = sample.clone();
         *right = sample;
 
-        if !keep_playing && index + 2 > len {
+        if phrase_buffer.is_empty() && index + 2 > len {
             *whole_note += whole_note_delta * (index / 2 + 1) as f64;
             return Some(index + 2);
         }
@@ -125,15 +145,16 @@ pub fn play_phrase(
     None
 }
 
-pub struct PlaybackState {
+pub struct PlaybackState<T: SampleTrait> {
     mode: PlaybackMode,
     arrangent: Arc<Mutex<Arrangement>>,
     instruments: Arc<Mutex<HashMap<InstrumentId, Box<dyn Synthesizer>>>>,
     command_receiver: Receiver<PlaybackCommand>,
     sample_rate: u32,
+    phantom: PhantomData<T>,
 }
 
-impl PlaybackState {
+impl<T: SampleTrait> PlaybackState<T> {
     pub fn new(
         arrangent: Arc<Mutex<Arrangement>>,
         instruments: Arc<Mutex<HashMap<InstrumentId, Box<dyn Synthesizer>>>>,
@@ -146,6 +167,7 @@ impl PlaybackState {
             instruments,
             command_receiver,
             sample_rate,
+            phantom: Default::default(),
         }
     }
 
@@ -153,13 +175,15 @@ impl PlaybackState {
         type M = PlaybackMode;
         match &self.mode {
             M::LoopPhrase(phrase_state) => {
-                let mut instrument_lock = self.instruments.lock()
+                let mut instrument_lock = self
+                    .instruments
+                    .lock()
                     .expect("cannot handle poisoned lock on instrument");
 
                 if let Some(instrument) = instrument_lock.get_mut(&phrase_state.instrument_id) {
                     instrument.stop_all();
                 }
-            },
+            }
             M::Off => (),
         }
     }
@@ -170,42 +194,52 @@ impl PlaybackState {
                 PlaybackCommand::StopPlayback => {
                     self.end_current_mode();
                     self.mode = PlaybackMode::Off
-                },
+                }
 
-                PlaybackCommand::LoopPhrase { phrase_id, instrument_id, wholes_per_second } => {
+                PlaybackCommand::LoopPhrase {
+                    phrase_id,
+                    instrument_id,
+                    wholes_per_second,
+                } => {
                     self.end_current_mode();
 
-                    let arrangement_lock = self.arrangent.lock()
+                    let arrangement_lock = self
+                        .arrangent
+                        .lock()
                         .expect("cannot handle poisoned lock on arrangent");
 
                     if let Some(phrase) = arrangement_lock.get_phrase(phrase_id) {
                         self.mode = LoopPhraseState {
                             phrase_id,
-                            phrase_buffer: new_command_buffer(phrase),
+                            phrase_buffer: phrase.buffer(),
                             instrument_id,
                             whole_note_delta: wholes_per_second / self.sample_rate as f64,
                             whole_note: 0.0,
-                        }.into();
+                        }
+                        .into();
                     } else {
                         self.mode = PlaybackMode::Off;
                     }
                 }
-
             }
         }
     }
 
-    pub fn play(&mut self, buffer: &mut [f32]) {
+    pub fn play(&mut self, buffer: &mut [T]) {
         self.handle_commands();
 
         if let PlaybackMode::Off = self.mode {
-            buffer.fill(0.0);
+            buffer.fill(T::MIDDLE);
             return;
         }
 
-        let arrangement_lock = self.arrangent.lock()
+        let arrangement_lock = self
+            .arrangent
+            .lock()
             .expect("cannot handle poisoned lock on arrangement");
-        let mut instruments_lock = self.instruments.lock()
+        let mut instruments_lock = self
+            .instruments
+            .lock()
             .expect("cannot handle poisoned lock on instruments");
 
         match &mut self.mode {
@@ -241,11 +275,11 @@ impl From<LoopPhraseState> for PlaybackMode {
 }
 
 impl LoopPhraseState {
-    pub fn play(
+    pub fn play<T: SampleTrait>(
         &mut self,
         arrangent: &Arrangement,
         instruments: &mut HashMap<InstrumentId, Box<dyn Synthesizer>>,
-        buffer: &mut [f32],
+        buffer: &mut [T],
     ) {
         if let Some(instrument) = instruments.get_mut(&self.instrument_id) {
             let mut range_start = 0;
@@ -253,9 +287,9 @@ impl LoopPhraseState {
             if self.phrase_buffer.len() <= 0 {
                 self.whole_note = 0.0;
                 if let Some(phrase) = arrangent.get_phrase(self.phrase_id) {
-                    self.phrase_buffer = new_command_buffer(phrase);
+                    self.phrase_buffer = phrase.buffer();
                 } else {
-                    buffer[range_start..].fill(0.0);
+                    buffer[range_start..].fill(T::MIDDLE);
                     return;
                 }
             }
@@ -265,34 +299,35 @@ impl LoopPhraseState {
                 instrument.as_mut(),
                 &mut self.whole_note,
                 self.whole_note_delta,
-                &mut buffer[range_start..]
+                &mut buffer[range_start..],
             ) {
                 range_start = index;
                 self.whole_note = 0.0;
 
                 if let Some(phrase) = arrangent.get_phrase(self.phrase_id) {
-                    self.phrase_buffer = new_command_buffer(phrase);
+                    self.phrase_buffer = phrase.buffer();
                 } else {
-                    buffer[range_start..].fill(0.0);
+                    buffer[range_start..].fill(T::MIDDLE);
                     return;
                 }
-
             }
-
         } else {
-            buffer.fill(0.0);
+            buffer.fill(T::MIDDLE);
         }
-
     }
 }
 
 pub enum PlaybackCommand {
     StopPlayback,
-    LoopPhrase{ phrase_id: PhraseId, instrument_id: InstrumentId, wholes_per_second: f64 }
+    LoopPhrase {
+        phrase_id: PhraseId,
+        instrument_id: InstrumentId,
+        wholes_per_second: f64,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlaybackKind {
     Off,
-    PhrasePlayback
+    PhrasePlayback,
 }
