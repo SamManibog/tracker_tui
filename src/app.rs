@@ -98,7 +98,7 @@ impl TuiTrackerApp {
             instruments,
             arrangement,
             playback_kind: PlaybackKind::Off,
-            page: AppPage::InstrumentOverview,
+            page: AppPage::Phrase,
             phrase_editor: PhraseEditor::new(),
             instrument_overview: InstrumentOverview::new(),
             current_phrase: PhraseId(0),

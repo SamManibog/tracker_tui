@@ -4,7 +4,7 @@ use rand::{RngExt, distr::uniform::SampleRange};
 use ratatui::{DefaultTerminal, Frame, crossterm::event::{self, Event, KeyCode, KeyEventKind}, layout::Rect, style::Style, text::Line, widgets::Widget};
 
 /// a struct representing the stored state of a shfit grid
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 pub struct ShiftGridState {
     /// the first row that appears on the screen
     pub left_row: u32,
@@ -83,8 +83,6 @@ pub struct ShiftGrid<'a> {
 }
 
 impl<'a> ShiftGrid<'a> {
-    pub const DEFAULT_ROW_COUNT: u32 = 0;
-    pub const DEFAULT_COL_COUNT: u32 = 0;
     pub const DEFAULT_ROW_GAP: u16 = 0;
     pub const DEFAULT_COL_GAP: u16 = 1;
 
@@ -117,18 +115,18 @@ impl<'a> ShiftGrid<'a> {
         }
     }
 
-    pub fn new(state: &'a mut ShiftGridState) -> Self {
+    pub fn new(state: &'a mut ShiftGridState, row_count: u32, col_count: u32) -> Self {
         Self {
+            row_count,
             row_numbers: &Self::default_row_numbers,
             row_number_width: 1,
-            row_count: Self::DEFAULT_ROW_COUNT,
             row_gap: Self::DEFAULT_ROW_GAP,
             row_number_gap: Self::DEFAULT_ROW_NUMBER_GAP,
             show_row_numbers: true,
 
+            col_count,
             col_numbers: &Self::default_col_numbers,
             col_widths: &Self::base10_width,
-            col_count: Self::DEFAULT_COL_COUNT,
             col_gap: Self::DEFAULT_COL_GAP,
             col_number_gap: Self::DEFAULT_COL_NUMBER_GAP,
             show_col_numbers: true,
@@ -596,6 +594,14 @@ impl<'a> ShiftGridTest<'a> {
         frame.render_widget(self, frame.area());
     }
 
+    fn row_count(&self) -> u32 {
+        self.cells.len() as u32
+    }
+
+    fn col_count(&self) -> u32 {
+        self.cells.get(0).unwrap_or(&Vec::new()).len() as u32
+    }
+
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> io::Result<()> {
         while !self.exit {
             terminal.draw(|frame| self.draw(frame))?;
@@ -629,11 +635,13 @@ impl<'a> Widget for &mut ShiftGridTest<'a> {
             ..area
         };
 
-        let mut grid = ShiftGrid::new(&mut self.state)
-            .row_number_width(ShiftGrid::base10_width((self.cells.len() - 1) as u32))
+        let row_count = self.row_count();
+        let col_count = self.col_count();
+        let mut grid = ShiftGrid::new(&mut self.state, row_count, col_count)
+            .row_number_width(ShiftGrid::base10_width(row_count - 1))
             .row_count(self.cells.len() as u32)
             .row_gap(0)
-            .col_count(self.cells.get(0).unwrap_or(&Vec::new()).len() as u32)
+            .col_count(col_count)
             .col_gap(1)
             .col_widths(&col_widths)
             .cells(&cells);
