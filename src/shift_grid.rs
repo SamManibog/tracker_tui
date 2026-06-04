@@ -6,11 +6,23 @@ use ratatui::{DefaultTerminal, Frame, crossterm::event::{self, Event, KeyCode, K
 /// a struct representing the stored state of a shfit grid
 #[derive(Default)]
 pub struct ShiftGridState {
+    /// the first row that appears on the screen
+    pub left_row: u32,
+
     /// the row that is "selected", which must be on screen
     pub centered_row: u32,
 
+    /// the last row that appears on the screen
+    pub right_row: u32,
+
+    /// the first column that appears on the screen
+    pub top_col: u32,
+
     /// the column that is "selected", which must be on screen
     pub centered_col: u32,
+
+    /// the last column that appears on the screen
+    pub bottom_col: u32,
 
     /// the area on the screen containing the centered cell
     pub centered_area: Rect,
@@ -390,6 +402,8 @@ impl Widget for &mut ShiftGrid<'_> {
             self.row_count,
             self.row_gap,
         );
+        self.state.left_row = start_row;
+        self.state.right_row = end_row;
 
         // check that line numbers fit
         if area.width < self.row_number_width {
@@ -438,6 +452,8 @@ impl Widget for &mut ShiftGrid<'_> {
             self.col_count,
             self.col_gap,
         );
+        self.state.top_col = start_col;
+        self.state.bottom_col = end_col;
 
         if self.show_col_numbers {
             // render columns numbers
