@@ -20,12 +20,6 @@ pub struct ShiftGridState {
 
     /// the y position of the camera
     pub cam_y: u32,
-
-    /// debug fields
-    pub d_start_col: u32,
-    pub d_end_col: u32,
-    pub d_x_offset: u16,
-    pub d_text: String,
 }
 
 /// a ratatui widget that can lay out small 1-height elements in a grid-like layout
@@ -313,7 +307,6 @@ impl<'a> ShiftGrid<'a> {
         let center_end_x = center_start_x + col_widths(col_start_xs.len() as u32 - 1).saturating_sub(1) as u32;
 
         if state.cam_x >= center_start_x {
-            state.d_text = String::from("case1");
             // fix camera
             state.cam_x = center_start_x;
 
@@ -329,8 +322,6 @@ impl<'a> ShiftGrid<'a> {
 
             (state.centered_col, col_count - 1, 0)
         } else if state.cam_x + width as u32 - 1 <= center_end_x {
-            state.d_text = String::from("case2");
-            
             // fix camera
             state.cam_x = center_end_x + 1 - width as u32;
 
@@ -344,8 +335,6 @@ impl<'a> ShiftGrid<'a> {
 
             (0, state.centered_col, 0)
         } else {
-            state.d_text = String::from("case3");
-
             let start_col = match col_start_xs.binary_search(&state.cam_x) {
                 Ok(i) => i as u32,
                 Err(i) => i as u32,
@@ -408,11 +397,18 @@ impl Widget for &mut ShiftGrid<'_> {
         }
 
         if self.show_row_numbers {
+            // the offset due to drawing columns
+            let col_offset = if self.show_col_numbers {
+                1 + self.col_number_gap
+            } else {
+                0
+            };
+
             // render row numbers
             for i in start_row..=end_row {
                 let rect = Rect {
                     x: area.x,
-                    y: area.y + (i - start_row) as u16 * (1 + self.row_gap) + y_offset + 1 + self.col_number_gap,
+                    y: area.y + (i - start_row) as u16 * (1 + self.row_gap) + y_offset + col_offset,
                     width: self.row_number_width,
                     height: 1,
                 };
@@ -442,9 +438,6 @@ impl Widget for &mut ShiftGrid<'_> {
             self.col_count,
             self.col_gap,
         );
-        self.state.d_start_col = start_col;
-        self.state.d_end_col = end_col;
-        self.state.d_x_offset = x_offset;
 
         if self.show_col_numbers {
             // render columns numbers
@@ -626,7 +619,6 @@ impl<'a> Widget for &mut ShiftGridTest<'a> {
             .row_gap(0)
             .col_count(self.cells.get(0).unwrap_or(&Vec::new()).len() as u32)
             .col_gap(1)
-            .col_number_gap(0)
             .col_widths(&col_widths)
             .cells(&cells);
 
@@ -636,17 +628,13 @@ impl<'a> Widget for &mut ShiftGridTest<'a> {
 
         let info_line = Line::from(
             format!(
-                "Dim: {}R:{}C, Cam {}R:{}C; Cel {}R:{}C; SC: {}; EC: {}; XO: {}; {}",
+                "Dim: {}R:{}C, Cam {}R:{}C; Cel {}R:{}C",
                 self.cells.len(),
                 self.cells.get(0).unwrap_or(&Vec::new()).len(),
                 self.state.cam_y,
                 self.state.cam_x,
                 self.state.centered_row,
-                self.state.centered_col,
-                self.state.d_start_col,
-                self.state.d_end_col,
-                self.state.d_x_offset,
-                self.state.d_text,
+                self.state.centered_col
             )
         );
 
