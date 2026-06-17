@@ -17,30 +17,6 @@ pub enum PhraseEditorMode {
     Insert,
 }
 
-/// a temporary Ratatui widget used to display a phrase
-pub struct PhraseWidget<'a> {
-    /// the phrase to draw
-    pub phrase: &'a Phrase,
-
-    /// the state of the underlying ShiftGrid
-    pub shift_grid_state: &'a mut ShiftGridState,
-}
-
-impl<'a> PhraseWidget<'a> {
-
-}
-
-impl Widget for PhraseWidget<'_> {
-    fn render(
-        self,
-        area: ratatui::prelude::Rect,
-        buf: &mut ratatui::prelude::Buffer
-    ) where Self: Sized {
-
-
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct PhraseEditor {
     /// the mode of the editor

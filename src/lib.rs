@@ -38,4 +38,7 @@ pub mod arrangement;
 
 pub mod shift_grid;
 
+pub mod keybinds;
+pub mod controls;
+
 mod utils;
